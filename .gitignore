@@ -1,0 +1,36 @@
+## .gitignore for .NET 10 project
+
+# Build outputs
+bin/
+obj/
+
+# User-specific files
+*.user
+*.suo
+.vs/
+
+# dotnet user-jwts (development JWT store)
+Properties/launchSettings.json
+
+# macOS
+.DS_Store
+
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# NuGet
+*.nupkg
+.nuget/
+
+# Rider / JetBrains
+.idea/
+
+# VS Code (allow settings but not per-user state)
+.vscode/launch.json
+.vscode/*.code-workspace

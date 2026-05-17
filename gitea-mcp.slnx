@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="gitea-mcp.csproj" />
+  <Project Path="gitea-mcp.Tests/gitea-mcp.Tests.csproj" />
+</Solution>

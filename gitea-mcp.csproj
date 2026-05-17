@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>GiteaMcp</RootNamespace>
+    <AssemblyName>gitea-mcp</AssemblyName>
+  </PropertyGroup>
+
+  <!-- 排除 Tests 子目录，避免 SDK.Web 的通配符 glob 把测试文件包进主项目 -->
+  <ItemGroup>
+    <Compile Remove="gitea-mcp.Tests/**" />
+    <Content Remove="gitea-mcp.Tests/**" />
+    <EmbeddedResource Remove="gitea-mcp.Tests/**" />
+    <None Remove="gitea-mcp.Tests/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MCP SDK：Streamable HTTP transport + ASP.NET Core 集成 -->
+    <PackageReference Include="ModelContextProtocol" Version="0.*" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.*" />
+
+    <!-- JWT Bearer 认证（HS256）。不显式 pin
+         Microsoft.IdentityModel.Tokens：JwtBearer 10.0.x 传递依赖
+         Microsoft.IdentityModel.JsonWebTokens 9.x，调 Base64UrlEncoder.Decode
+         (ReadOnlySpan, Span) 在 Tokens 9.x 才有；显式 pin 8.* 会 downgrade Tokens
+         → runtime MissingMethodException → 任何 JWT 验证 401。 -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.*" />
+
+    <!-- HttpClient 弹性策略（retry + backoff） -->
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="9.*" />
+  </ItemGroup>
+
+</Project>

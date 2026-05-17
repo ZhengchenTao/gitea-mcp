@@ -1,0 +1,15 @@
+**/.vs
+**/.vscode
+**/.idea
+**/bin
+**/obj
+**/*.user
+**/*.suo
+.git
+.gitea
+.gitignore
+.dockerignore
+README.md
+LICENSE
+**/*.md
+gitea-mcp.Tests/
