@@ -94,3 +94,27 @@ jobs:
             echo "| Commit (full) | \`${{ steps.meta.outputs.full_sha }}\` |"
             echo "| 镜像 | \`${{ steps.meta.outputs.image_ref }}:${{ steps.meta.outputs.image_tag }}\` + \`:latest\` |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    # 仅在 build 成功 + 配置了 vars.DEPLOY_PATH 时运行。
+    # DEPLOY_PATH 留空（例如开源镜像里的 GitHub）就跳过——不向公开仓库暴露 NAS 路径。
+    needs: build
+    if: ${{ vars.DEPLOY_PATH != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ gitea.actor }}
+          password: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Pull and restart
+        run: |
+          set -e
+          cd "${{ vars.DEPLOY_PATH }}"
+          docker compose pull
+          docker compose up -d
+          sleep 3
+          docker compose ps
+          docker compose logs --tail=30
