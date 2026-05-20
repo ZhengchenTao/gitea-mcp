@@ -152,9 +152,10 @@ docker run --rm -p 8080:8080 \
 The included `.gitea/workflows/build-image.yml` builds and pushes the image
 on every push to `main`. It expects these repository Variables / Secrets:
 
-- `vars.REGISTRY` — registry hostname (e.g. `ghcr.io`)
+- `vars.REGISTRY` — registry hostname (e.g. `ghcr.io`, or `git.example.com` for Gitea Container Registry)
 - `vars.IMAGE_OWNER` — registry owner/namespace
 - `secrets.PACKAGES_TOKEN` — registry push token
+- `vars.DEPLOY_PATH` — *(optional)* path to a docker-compose directory on the runner host. When set, the workflow runs a follow-up `deploy` job that `cd`s into this directory and `docker compose up -d` to pull the new image. Leave empty to only build & push.
 
 ## Choosing an AS
 

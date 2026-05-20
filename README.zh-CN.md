@@ -145,9 +145,10 @@ docker run --rm -p 8080:8080 \
 
 仓库内的 `.gitea/workflows/build-image.yml` 在每次推送到 `main` 时构建并推送镜像。需要在仓库设置中配置：
 
-- `vars.REGISTRY` —— registry 主机名（例如 `ghcr.io`）
+- `vars.REGISTRY` —— registry 主机名（例如 `ghcr.io`，自建 Gitea Container Registry 写 `git.example.com`）
 - `vars.IMAGE_OWNER` —— registry 的 owner / namespace
 - `secrets.PACKAGES_TOKEN` —— registry 推送 token
+- `vars.DEPLOY_PATH` —— *(可选)* runner 主机上某个 docker-compose 目录的路径。配上之后 workflow 会跑一个 `deploy` 后续 job：`cd` 到这个目录后 `docker compose up -d` 拉新镜像。留空只 build & push。
 
 ## Choosing an AS
 
