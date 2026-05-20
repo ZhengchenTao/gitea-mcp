@@ -150,7 +150,9 @@ docker run --rm -p 8080:8080 \
 ```
 
 The included `.gitea/workflows/build-image.yml` builds and pushes the image
-on every push to `main`. It expects these repository Variables / Secrets:
+on every push to `main`, then optionally redeploys the container on the
+runner host (controlled by `vars.DEPLOY_PATH`, see below). It expects these
+repository Variables / Secrets:
 
 - `vars.REGISTRY` — registry hostname (e.g. `ghcr.io`, or `git.example.com` for Gitea Container Registry)
 - `vars.IMAGE_OWNER` — registry owner/namespace

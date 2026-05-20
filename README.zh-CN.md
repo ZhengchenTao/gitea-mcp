@@ -143,7 +143,7 @@ docker run --rm -p 8080:8080 \
   gitea-mcp
 ```
 
-仓库内的 `.gitea/workflows/build-image.yml` 在每次推送到 `main` 时构建并推送镜像。需要在仓库设置中配置：
+仓库内的 `.gitea/workflows/build-image.yml` 在每次推送到 `main` 时构建并推送镜像，并可选在 runner 主机上重启容器（由下方 `vars.DEPLOY_PATH` 控制）。需要在仓库设置中配置：
 
 - `vars.REGISTRY` —— registry 主机名（例如 `ghcr.io`，自建 Gitea Container Registry 写 `git.example.com`）
 - `vars.IMAGE_OWNER` —— registry 的 owner / namespace
