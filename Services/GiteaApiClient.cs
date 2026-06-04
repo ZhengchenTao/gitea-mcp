@@ -196,33 +196,55 @@ public class GiteaApiClient
         => GetAsync<GiteaWorkflowJobList>($"/api/v1/repos/{owner}/{repo}/actions/runs/{runId}/jobs", ct);
 
     /// <summary>
-    /// 获取 run/job 日志。Gitea Actions log API 返回 ZIP 或纯文本，
-    /// 这里最多读 maxBytes（1MB）防爆内存。
+    /// 获取单个 job 的日志（纯文本）。Gitea 1.24+ 端点：
+    ///   GET /api/v1/repos/{owner}/{repo}/actions/jobs/{jobId}/logs
+    /// 注意：
+    ///   - Gitea 没有 run 级日志端点，run 日志 = 各 job 日志拼接（见 ActionsTools）。
+    ///   - job 是 repo 级资源，不是 /runs/{run}/jobs/{job}/logs 这种嵌套路径。
+    /// 最多读 maxBytes（默认 1MB）防爆内存。
     /// </summary>
-    public async Task<string> GetRunLogAsync(
-        string owner, string repo, long runId, long? jobId, int maxBytes = 1024 * 1024,
+    public async Task<string> GetJobLogAsync(
+        string owner, string repo, long jobId, int maxBytes = 1024 * 1024,
         CancellationToken ct = default)
     {
-        var url = jobId.HasValue
-            ? $"/api/v1/repos/{owner}/{repo}/actions/runs/{runId}/jobs/{jobId}/logs"
-            : $"/api/v1/repos/{owner}/{repo}/actions/runs/{runId}/logs";
+        var url = $"/api/v1/repos/{owner}/{repo}/actions/jobs/{jobId}/logs";
 
         try
         {
             var response = await SendAsync(url, ct);
             using var stream = await response.Content.ReadAsStreamAsync(ct);
-            var buffer = new byte[maxBytes];
-            var bytesRead = await stream.ReadAsync(buffer.AsMemory(), ct);
-            var text = System.Text.Encoding.UTF8.GetString(buffer, 0, bytesRead);
-            return bytesRead == maxBytes
-                ? text + "\n[...log truncated at 1MB...]"
-                : text;
+            var (text, truncated) = await ReadUpToAsync(stream, maxBytes, ct);
+            return truncated ? text + "\n[...log truncated at 1MB...]" : text;
         }
         catch (KeyNotFoundException)
         {
-            // Actions log 可能还未生成（run 刚开始）
+            // job 日志可能还未生成（job 排队中/刚开始）
             return "[Log not yet available]";
         }
+    }
+
+    /// <summary>
+    /// 从 stream 读最多 maxBytes 字节，循环读满——单次 ReadAsync 可能返回不足量
+    /// （未到 EOF 也可能只给一部分），不循环会把日志提前截断。
+    /// 返回 (text, truncated)，truncated 表示还有更多内容被丢弃。
+    /// </summary>
+    private static async Task<(string Text, bool Truncated)> ReadUpToAsync(
+        Stream stream, int maxBytes, CancellationToken ct)
+    {
+        var buffer = new byte[maxBytes];
+        int total = 0;
+        while (total < maxBytes)
+        {
+            int n = await stream.ReadAsync(buffer.AsMemory(total, maxBytes - total), ct);
+            if (n == 0) break;
+            total += n;
+        }
+
+        // 读满了 maxBytes 还能再读到字节，说明被截断
+        bool truncated = total == maxBytes
+            && await stream.ReadAsync(new byte[1].AsMemory(), ct) > 0;
+
+        return (System.Text.Encoding.UTF8.GetString(buffer, 0, total), truncated);
     }
 
     // ───────────── Code search ─────────────

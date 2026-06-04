@@ -76,7 +76,9 @@ public class GiteaWorkflowJob
 
 public class GiteaWorkflowJobList
 {
-    [JsonPropertyName("workflow_jobs")]
+    // Gitea 1.24+ 返回的字段是 "jobs"（与 GitHub 一致），不是 "workflow_jobs"。
+    // 注意 run 列表用的才是 "workflow_runs"——两者不对称，别想当然。
+    [JsonPropertyName("jobs")]
     public List<GiteaWorkflowJob> WorkflowJobs { get; set; } = [];
 
     [JsonPropertyName("total_count")]

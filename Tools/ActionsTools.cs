@@ -1,6 +1,7 @@
 using GiteaMcp.Services;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
+using System.Text;
 
 namespace GiteaMcp.Tools;
 
@@ -69,13 +70,34 @@ public class ActionsTools(
 
         var runTask = gitea.GetWorkflowRunAsync(owner, repo, run_id, ct);
         var jobsTask = gitea.GetRunJobsAsync(owner, repo, run_id, ct);
-        var logTask = gitea.GetRunLogAsync(owner, repo, run_id, job_id, ct: ct);
 
-        await Task.WhenAll(runTask, jobsTask, logTask);
+        await Task.WhenAll(runTask, jobsTask);
 
         var run = await runTask;
         var jobList = await jobsTask;
-        var log = await logTask;
+
+        // Gitea 没有 run 级日志端点：指定 job_id 就取那个 job，
+        // 否则把这个 run 下所有 job 的日志拼起来（每段带 job 头）。
+        string log;
+        if (job_id.HasValue)
+        {
+            log = await gitea.GetJobLogAsync(owner, repo, job_id.Value, ct: ct);
+        }
+        else if (jobList.WorkflowJobs.Count == 0)
+        {
+            log = "[No jobs for this run]";
+        }
+        else
+        {
+            var sb = new StringBuilder();
+            foreach (var j in jobList.WorkflowJobs)
+            {
+                sb.AppendLine($"===== Job: {j.Name} (id={j.Id}, {j.Status}/{j.Conclusion}) =====");
+                sb.AppendLine(await gitea.GetJobLogAsync(owner, repo, j.Id, ct: ct));
+                sb.AppendLine();
+            }
+            log = sb.ToString();
+        }
 
         return new
         {
