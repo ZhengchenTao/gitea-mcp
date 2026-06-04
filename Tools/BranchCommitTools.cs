@@ -71,9 +71,11 @@ public class BranchCommitTools(
 
     [McpServerTool]
     [Description(
-        "Get full details of a single commit: message, author, stats, and per-file diff. " +
-        "Files are limited to max_files=50; when truncated=true, some files are omitted. " +
-        "Patch (diff text) is included per file — useful for code review or understanding specific changes. " +
+        "Get full details of a single commit: message, author, aggregate stats, changed file list, " +
+        "and the full unified diff text. " +
+        "Files are limited to max_files=50; when files_truncated=true, some filenames are omitted. " +
+        "Note: Gitea's commit endpoint only gives per-file name+status (no per-file line counts); " +
+        "actual line changes are in the 'diff' field (unified diff, truncated at 1MB). " +
         "Use list_commits first to obtain a SHA.")]
     public async Task<object> read_commit(
         [Description("Repository owner.")] string owner,
@@ -85,7 +87,13 @@ public class BranchCommitTools(
             throw new UnauthorizedAccessException($"Repo {owner}/{repo} is on the access blocklist.");
 
         const int MaxFiles = 50;
-        var commit = await gitea.GetCommitAsync(owner, repo, sha, ct);
+        // 元数据和 diff 并行拉：元数据给 message/stats/文件名，diff 给真实改动
+        var commitTask = gitea.GetCommitAsync(owner, repo, sha, ct);
+        var diffTask = gitea.GetCommitDiffAsync(owner, repo, sha, ct: ct);
+        await Task.WhenAll(commitTask, diffTask);
+
+        var commit = await commitTask;
+        var diff = await diffTask;
 
         var files = commit.Files ?? [];
         bool truncated = files.Count > MaxFiles;
@@ -107,15 +115,13 @@ public class BranchCommitTools(
                 deletions = commit.Stats.Deletions,
             },
             files_truncated = truncated,
+            // Gitea commit 端点不给 per-file 行数/patch，只列文件名+状态
             files = files.Select(f => new
             {
                 filename = f.Filename,
                 status = f.Status,
-                additions = f.Additions,
-                deletions = f.Deletions,
-                changes = f.Changes,
-                patch = f.Patch,
             }).ToList(),
+            diff = diff ?? "[diff unavailable]",
         };
     }
 }

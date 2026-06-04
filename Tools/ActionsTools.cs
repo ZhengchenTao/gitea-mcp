@@ -45,8 +45,8 @@ public class ActionsTools(
                 conclusion = r.Conclusion,
                 actor = r.Actor?.Login,
                 html_url = r.HtmlUrl,
-                created_at = r.CreatedAt,
-                updated_at = r.UpdatedAt,
+                started_at = r.StartedAt,
+                completed_at = r.CompletedAt,
             }).ToList(),
         };
     }
@@ -112,8 +112,8 @@ public class ActionsTools(
                 conclusion = run.Conclusion,
                 actor = run.Actor?.Login,
                 html_url = run.HtmlUrl,
-                created_at = run.CreatedAt,
-                updated_at = run.UpdatedAt,
+                started_at = run.StartedAt,
+                completed_at = run.CompletedAt,
             },
             jobs = jobList.WorkflowJobs.Select(j => new
             {

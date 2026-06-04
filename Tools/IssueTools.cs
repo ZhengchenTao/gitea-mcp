@@ -28,7 +28,24 @@ public class IssueTools(
 
         var st = state ?? "open";
         var lim = Math.Min(limit ?? 30, 50);
-        var issues = await gitea.GetIssuesAsync(owner, repo, st, lim, ct);
+
+        List<Services.Models.GiteaIssue> issues;
+        try
+        {
+            issues = await gitea.GetIssuesAsync(owner, repo, st, lim, ct);
+        }
+        catch (KeyNotFoundException)
+        {
+            // Gitea 对禁用了 issues 单元的仓库返回 404
+            return new
+            {
+                ok = false,
+                error = "issues_unavailable",
+                notice = $"Gitea returned 404 for issues on {owner}/{repo}. " +
+                         "The issues unit is likely disabled for this repo, or the repo doesn't exist.",
+                issues = Array.Empty<object>(),
+            };
+        }
 
         return issues.Select(i => new
         {
@@ -60,8 +77,23 @@ public class IssueTools(
         if (filter.IsBlocked($"{owner}/{repo}"))
             throw new UnauthorizedAccessException($"Repo {owner}/{repo} is on the access blocklist.");
 
-        var issue = await gitea.GetIssueAsync(owner, repo, number, ct);
-        var comments = await gitea.GetIssueCommentsAsync(owner, repo, number, ct);
+        Services.Models.GiteaIssue issue;
+        List<Services.Models.GiteaComment> comments;
+        try
+        {
+            issue = await gitea.GetIssueAsync(owner, repo, number, ct);
+            comments = await gitea.GetIssueCommentsAsync(owner, repo, number, ct);
+        }
+        catch (KeyNotFoundException)
+        {
+            return new
+            {
+                ok = false,
+                error = "issue_not_found",
+                notice = $"Gitea returned 404 for issue #{number} on {owner}/{repo}. " +
+                         "The issue may not exist, or the issues unit is disabled for this repo.",
+            };
+        }
 
         return new
         {

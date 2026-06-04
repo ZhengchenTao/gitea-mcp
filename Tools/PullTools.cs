@@ -28,7 +28,25 @@ public class PullTools(
 
         var st = state ?? "open";
         var lim = Math.Min(limit ?? 30, 50);
-        var pulls = await gitea.GetPullsAsync(owner, repo, st, lim, ct);
+
+        List<Services.Models.GiteaPullRequest> pulls;
+        try
+        {
+            pulls = await gitea.GetPullsAsync(owner, repo, st, lim, ct);
+        }
+        catch (KeyNotFoundException)
+        {
+            // Gitea 对禁用了 PR 单元的仓库（mirror 常见）返回 404
+            return new
+            {
+                ok = false,
+                error = "pulls_unavailable",
+                notice = $"Gitea returned 404 for pull requests on {owner}/{repo}. " +
+                         "The pull-requests unit is likely disabled (common for mirror repos), " +
+                         "or the repo doesn't exist.",
+                pulls = Array.Empty<object>(),
+            };
+        }
 
         return pulls.Select(p => new
         {
@@ -62,15 +80,31 @@ public class PullTools(
             throw new UnauthorizedAccessException($"Repo {owner}/{repo} is on the access blocklist.");
 
         // 并行拉取 PR 主体、评论、变更文件
-        var pullTask = gitea.GetPullAsync(owner, repo, number, ct);
-        var commentsTask = gitea.GetPullCommentsAsync(owner, repo, number, ct);
-        var filesTask = gitea.GetPullFilesAsync(owner, repo, number, ct);
+        Services.Models.GiteaPullRequest pull;
+        List<Services.Models.GiteaComment> comments;
+        List<Services.Models.GiteaPrFile> files;
+        try
+        {
+            var pullTask = gitea.GetPullAsync(owner, repo, number, ct);
+            var commentsTask = gitea.GetPullCommentsAsync(owner, repo, number, ct);
+            var filesTask = gitea.GetPullFilesAsync(owner, repo, number, ct);
 
-        await Task.WhenAll(pullTask, commentsTask, filesTask);
+            await Task.WhenAll(pullTask, commentsTask, filesTask);
 
-        var pull = await pullTask;
-        var comments = await commentsTask;
-        var files = await filesTask;
+            pull = await pullTask;
+            comments = await commentsTask;
+            files = await filesTask;
+        }
+        catch (KeyNotFoundException)
+        {
+            return new
+            {
+                ok = false,
+                error = "pull_not_found",
+                notice = $"Gitea returned 404 for pull #{number} on {owner}/{repo}. " +
+                         "The PR may not exist, or the pull-requests unit is disabled (common for mirror repos).",
+            };
+        }
 
         return new
         {

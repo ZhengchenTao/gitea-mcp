@@ -22,6 +22,7 @@ public class GiteaPackage
     [JsonPropertyName("creator")]
     public GiteaUser? Creator { get; set; }
 
-    [JsonPropertyName("created")]
+    // Gitea 包元数据的时间字段是 created_at，不是 created
+    [JsonPropertyName("created_at")]
     public DateTimeOffset Created { get; set; }
 }

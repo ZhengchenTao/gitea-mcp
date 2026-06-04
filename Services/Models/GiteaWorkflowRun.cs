@@ -34,11 +34,12 @@ public class GiteaWorkflowRun
     [JsonPropertyName("html_url")]
     public string? HtmlUrl { get; set; }
 
-    [JsonPropertyName("created_at")]
-    public DateTimeOffset CreatedAt { get; set; }
+    // Gitea 的 workflow run 没有 created_at/updated_at，只有 started_at/completed_at
+    [JsonPropertyName("started_at")]
+    public DateTimeOffset StartedAt { get; set; }
 
-    [JsonPropertyName("updated_at")]
-    public DateTimeOffset UpdatedAt { get; set; }
+    [JsonPropertyName("completed_at")]
+    public DateTimeOffset CompletedAt { get; set; }
 
     [JsonPropertyName("actor")]
     public GiteaUser? Actor { get; set; }

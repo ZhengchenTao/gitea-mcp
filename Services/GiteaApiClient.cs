@@ -46,7 +46,12 @@ public class GiteaApiClient
         var url = $"/api/v1/repos/search?limit={limit}&include_desc=true";
 
         if (!string.IsNullOrWhiteSpace(owner))
-            url += $"&q={Uri.EscapeDataString(owner)}";
+        {
+            // /repos/search 没有"按 owner 名过滤"的参数，只能用 uid（owner 的数字 id）。
+            // 之前误把 owner 塞进 q——那是按仓库名做文本搜索，所以 owner 过滤永远返回空。
+            var uid = await ResolveOwnerIdAsync(owner, ct);
+            url += $"&uid={uid}&exclusive=true";
+        }
 
         if (visibility == "private")
             url += "&private=true";
@@ -61,6 +66,24 @@ public class GiteaApiClient
     /// <summary>读取单个仓库元数据</summary>
     public Task<GiteaRepo> GetRepoAsync(string owner, string repo, CancellationToken ct = default)
         => GetAsync<GiteaRepo>($"/api/v1/repos/{owner}/{repo}", ct);
+
+    /// <summary>
+    /// 把 owner 登录名解析成数字 id（user 或 org 都支持）。
+    /// 先按 user 查，404 再按 org 查——Gitea 里 org 也是一种 user，但端点可能区分。
+    /// </summary>
+    private async Task<long> ResolveOwnerIdAsync(string owner, CancellationToken ct)
+    {
+        try
+        {
+            var user = await GetAsync<GiteaUser>($"/api/v1/users/{Uri.EscapeDataString(owner)}", ct);
+            return user.Id;
+        }
+        catch (KeyNotFoundException)
+        {
+            var org = await GetAsync<GiteaOrg>($"/api/v1/orgs/{Uri.EscapeDataString(owner)}", ct);
+            return org.Id;
+        }
+    }
 
     // ───────────── Tree & File ─────────────
 
@@ -111,6 +134,31 @@ public class GiteaApiClient
     public Task<GiteaCommitFull> GetCommitAsync(
         string owner, string repo, string sha, CancellationToken ct = default)
         => GetAsync<GiteaCommitFull>($"/api/v1/repos/{owner}/{repo}/git/commits/{sha}", ct);
+
+    /// <summary>
+    /// 获取单个 commit 的统一 diff 文本。
+    /// Gitea 的 commit 元数据端点的 files 只含 filename+status，没有行数/patch，
+    /// 真正的 diff 要走 .diff 端点：GET /repos/{owner}/{repo}/git/commits/{sha}.diff。
+    /// 取不到（端点缺失/空）时返回 null，调用方据此降级，不抛异常。
+    /// 最多读 maxBytes（默认 1MB）防爆内存。
+    /// </summary>
+    public async Task<string?> GetCommitDiffAsync(
+        string owner, string repo, string sha, int maxBytes = 1024 * 1024,
+        CancellationToken ct = default)
+    {
+        var url = $"/api/v1/repos/{owner}/{repo}/git/commits/{Uri.EscapeDataString(sha)}.diff";
+        try
+        {
+            var response = await SendAsync(url, ct);
+            using var stream = await response.Content.ReadAsStreamAsync(ct);
+            var (text, truncated) = await ReadUpToAsync(stream, maxBytes, ct);
+            return truncated ? text + "\n[...diff truncated at 1MB...]" : text;
+        }
+        catch (KeyNotFoundException)
+        {
+            return null;
+        }
+    }
 
     // ───────────── Issues ─────────────
 
