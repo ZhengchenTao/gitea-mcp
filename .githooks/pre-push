@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# pre-push 守门：push 到 main 会触发 CI 自动 build + deploy（见 .gitea/workflows/build-image.yml），
+# 所以推之前先在本地把 build + 测试跑通，别把编译不过/测试挂的镜像自动部署上线。
+#
+# 启用：git config core.hooksPath .githooks
+# 临时跳过（应急）：git push --no-verify
+set -euo pipefail
+
+# 只在推 main 时严格把关；其它分支不拦（按需放宽）
+push_to_main=false
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main) push_to_main=true ;;
+  esac
+done
+
+if [ "$push_to_main" != true ]; then
+  exit 0
+fi
+
+echo "[pre-push] 目标是 main（push 即自动部署），先跑 build + test ..."
+
+if ! command -v dotnet >/dev/null 2>&1; then
+  echo "[pre-push] 找不到 dotnet，跳过本地校验（CI 仍会构建）。" >&2
+  exit 0
+fi
+
+dotnet build -nologo --verbosity quiet
+dotnet test  -nologo --verbosity quiet
+
+echo "[pre-push] OK，放行。"
