@@ -149,16 +149,15 @@ public class GiteaApiClient
     // ───────────── Orgs ─────────────
 
     /// <summary>
-    /// 列出所有组织。优先 /orgs/search（任意 read PAT 即可）；
+    /// 列出所有组织。用 /api/v1/orgs（任意 read PAT 即可，返回当前用户可见的 org）；
     /// 仅当带 admin scope 的 PAT 才能访问 /admin/orgs。本服务的 PAT 设计为只读，
-    /// 因此不走 /admin/* 端点。/orgs/search 不传 q 时返回所有可见 org。
+    /// 因此不走 /admin/* 端点。
+    /// 注意：Gitea 没有 /orgs/search 端点（org 不像 repo/user 那样支持 search），
+    /// /orgs/search 会被路由成 /orgs/{org}（org="search"）→ 404。
     /// </summary>
-    public async Task<List<GiteaOrg>> GetOrgsAsync(int limit, CancellationToken ct = default)
-    {
-        // /orgs/search 返回 { ok, data: [...] }
-        var resp = await GetAsync<GiteaOrgSearchResult>($"/api/v1/orgs/search?limit={limit}", ct);
-        return resp.Data;
-    }
+    public Task<List<GiteaOrg>> GetOrgsAsync(int limit, CancellationToken ct = default)
+        // /api/v1/orgs 直接返回裸数组 [...]，不是 { ok, data } 包装
+        => GetAsync<List<GiteaOrg>>($"/api/v1/orgs?limit={limit}", ct);
 
     public Task<GiteaOrg> GetOrgAsync(string name, CancellationToken ct = default)
         => GetAsync<GiteaOrg>($"/api/v1/orgs/{name}", ct);

@@ -31,13 +31,3 @@ public class GiteaOrg
     [JsonPropertyName("visibility")]
     public string? Visibility { get; set; }
 }
-
-/// <summary>/api/v1/orgs/search 的响应包装（顶层 { ok, data }）。</summary>
-public class GiteaOrgSearchResult
-{
-    [JsonPropertyName("ok")]
-    public bool Ok { get; set; }
-
-    [JsonPropertyName("data")]
-    public List<GiteaOrg> Data { get; set; } = [];
-}
