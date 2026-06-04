@@ -3,9 +3,8 @@ name: Build Docker Image
 # Registry / 镜像路径通过 gitea 仓库 Variables 配置：
 #   vars.REGISTRY      例如 git.example.com（不带协议、不带斜杠）
 #   vars.IMAGE_OWNER   例如 your-username 或组织名
-#   vars.PACKAGES_USER 登录 registry 的用户名，必须 = PACKAGES_TOKEN 的所有者
-#                      （别用 gitea.actor：换人触发时 actor≠token 主人会 unauthorized）
 #   secrets.PACKAGES_TOKEN  推镜像用的 token，需勾 read:package + write:package
+#                           ⚠️ 别设过期时间（或定期续）：过期后 docker login 会 unauthorized
 
 on:
   push:
@@ -52,7 +51,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ vars.REGISTRY }}
-          username: ${{ vars.PACKAGES_USER }}
+          username: ${{ gitea.actor }}
           password: ${{ secrets.PACKAGES_TOKEN }}
 
       - name: Determine image tag
@@ -108,7 +107,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ vars.REGISTRY }}
-          username: ${{ vars.PACKAGES_USER }}
+          username: ${{ gitea.actor }}
           password: ${{ secrets.PACKAGES_TOKEN }}
 
       - name: Pull and restart
