@@ -89,11 +89,15 @@ public class ActionsTools(
         }
         else
         {
+            // 聚合多个 job 时每个只取尾部 16KB，避免整段塞爆返回上限。
+            // 要看某个 job 的更多日志，带上 job_id 单独取。
             var sb = new StringBuilder();
+            sb.AppendLine("[note: showing the tail of each job's log; pass job_id for a single job's longer log]");
+            sb.AppendLine();
             foreach (var j in jobList.WorkflowJobs)
             {
                 sb.AppendLine($"===== Job: {j.Name} (id={j.Id}, {j.Status}/{j.Conclusion}) =====");
-                sb.AppendLine(await gitea.GetJobLogAsync(owner, repo, j.Id, ct: ct));
+                sb.AppendLine(await gitea.GetJobLogAsync(owner, repo, j.Id, maxBytes: 16 * 1024, ct: ct));
                 sb.AppendLine();
             }
             log = sb.ToString();

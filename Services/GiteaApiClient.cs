@@ -252,7 +252,7 @@ public class GiteaApiClient
     /// 最多读 maxBytes（默认 1MB）防爆内存。
     /// </summary>
     public async Task<string> GetJobLogAsync(
-        string owner, string repo, long jobId, int maxBytes = 1024 * 1024,
+        string owner, string repo, long jobId, int maxBytes = 128 * 1024, bool tail = true,
         CancellationToken ct = default)
     {
         var url = $"/api/v1/repos/{owner}/{repo}/actions/jobs/{jobId}/logs";
@@ -261,14 +261,52 @@ public class GiteaApiClient
         {
             var response = await SendAsync(url, ct);
             using var stream = await response.Content.ReadAsStreamAsync(ct);
-            var (text, truncated) = await ReadUpToAsync(stream, maxBytes, ct);
-            return truncated ? text + "\n[...log truncated at 1MB...]" : text;
+
+            if (tail)
+            {
+                // CI 日志失败信息都在末尾，取尾部更有用，也避免整段塞爆 MCP 返回上限
+                var (text, cut) = await ReadTailAsync(stream, maxBytes, ct);
+                return cut ? "[...earlier log truncated...]\n" + text : text;
+            }
+
+            var (head, truncated) = await ReadUpToAsync(stream, maxBytes, ct);
+            return truncated ? head + "\n[...log truncated...]" : head;
         }
         catch (KeyNotFoundException)
         {
             // job 日志可能还未生成（job 排队中/刚开始）
             return "[Log not yet available]";
         }
+    }
+
+    /// <summary>
+    /// 读取 stream 的尾部最多 maxBytes 字节（失败日志重点在末尾）。
+    /// 全量读入有硬上限防爆内存；为避免从多字节字符中间切开导致首行乱码，
+    /// 截断时从尾窗口内第一个换行之后开始。返回 (text, 是否截掉了前面)。
+    /// </summary>
+    private static async Task<(string Text, bool Cut)> ReadTailAsync(
+        Stream stream, int maxBytes, CancellationToken ct)
+    {
+        const int HardCeiling = 16 * 1024 * 1024; // 16MB，超大日志的兜底
+        using var ms = new MemoryStream();
+        var buf = new byte[81920];
+        int n;
+        while ((n = await stream.ReadAsync(buf.AsMemory(), ct)) > 0)
+        {
+            ms.Write(buf, 0, n);
+            if (ms.Length > HardCeiling) break;
+        }
+
+        var all = ms.GetBuffer();
+        int len = (int)ms.Length;
+        if (len <= maxBytes)
+            return (System.Text.Encoding.UTF8.GetString(all, 0, len), false);
+
+        int start = len - maxBytes;
+        // 推进到下一个换行，避免半个字符/半行
+        while (start < len && all[start] != (byte)'\n') start++;
+        if (start < len) start++; // 跳过换行本身
+        return (System.Text.Encoding.UTF8.GetString(all, start, len - start), true);
     }
 
     /// <summary>
