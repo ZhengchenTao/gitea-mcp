@@ -103,6 +103,14 @@ jobs:
     if: ${{ vars.DEPLOY_PATH != '' }}
     runs-on: ubuntu-latest
     steps:
+      # DEPLOY_PATH 的上一层是 compose 仓库的 clone（origin 已嵌只读 token），
+      # deploy 前先 git pull 把 compose 改动带上；pull 失败只告警不阻断镜像部署。
+      - name: Sync compose repo
+        run: |
+          COMPOSE_ROOT="$(dirname "${{ vars.DEPLOY_PATH }}")"
+          git -c safe.directory="$COMPOSE_ROOT" -C "$COMPOSE_ROOT" pull --ff-only \
+            || echo "::warning::compose repo pull failed — deploying with existing compose"
+
       - name: Login to Container Registry
         uses: docker/login-action@v3
         with:
