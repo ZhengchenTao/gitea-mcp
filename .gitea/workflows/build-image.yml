@@ -90,6 +90,16 @@ jobs:
           # Gitea registry 支持不好。
           provenance: false
           sbom: false
+          # HTTP(S)_PROXY / NO_PROXY 是 Docker 的【预定义 build-arg】，不用在 Dockerfile
+          # 里 ARG 声明就能注入 RUN 步骤，也不会写进镜像 history。指向宿主机 xray
+          # （docker0 网关 172.17.0.1 —— RUN 步骤跑在默认 bridge 上，够不到 127.0.0.1）。
+          # xray 路由：境外走 SG 节点，国内和自家 Gitea 直连。
+          # 不加的话容器内 apk/npm/go 全直连被墙（2026-07-17 实测 apk 装 43 个包 31 分钟、
+          # go mod 直接失败；加上之后 apk 3 秒、go 模块 7 秒）。
+          build-args: |
+            HTTP_PROXY=http://172.17.0.1:10809
+            HTTPS_PROXY=http://172.17.0.1:10809
+            NO_PROXY=localhost,127.0.0.1,git.aifacely.net,git.zhengchentao.win
           # image.source 指本仓事实源，镜像只是暂存在 registry。
           # 清理脚本（nas-janitor）靠这个精确值找自家产物。
           labels: |
