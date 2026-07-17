@@ -1,10 +1,24 @@
 name: Build Docker Image
 
-# Registry / 镜像路径通过 gitea 仓库 Variables 配置：
-#   vars.REGISTRY      例如 git.example.com（不带协议、不带斜杠）
-#   vars.IMAGE_OWNER   例如 your-username 或组织名
-#   secrets.PACKAGES_TOKEN  推镜像用的 token，需勾 read:package + write:package
-#                           ⚠️ 别设过期时间（或定期续）：过期后 docker login 会 unauthorized
+# Registry / 镜像路径 / 部署目标通过 gitea 仓库 Variables + Secrets 配置。
+# ⚠️ 本仓是公开仓（且镜像到 GitHub），正文里绝不写部署主机、路径、host key。
+#   vars.REGISTRY            例如 git.example.com（不带协议、不带斜杠）
+#   vars.IMAGE_OWNER         例如 your-username 或组织名
+#   vars.DEPLOY_SERVICE      部署目标服务名；留空（例如开源镜像里的 GitHub）就跳过 deploy
+#   secrets.AIFACELY_REGISTRY_TOKEN  推镜像用，需 read:package + write:package
+#                            ⚠️ 别设过期时间（或定期续）：过期后 docker login 会 unauthorized
+#   secrets.NAS_CI_SSH_KEY         部署用私钥
+#   secrets.NAS_SSH_HOST           部署目标主机
+#   secrets.NAS_SSH_KNOWN_HOSTS    目标主机 host key（固定，不用 accept-new）
+#
+# 2026-07-17：构建从 NAS runner 迁到云端 runner（同类 .NET 项目实测 27-42 分钟 → 1 分 57 秒）。
+# 迁回时要改回来的四处（git log 里 2026-07-17 那次 commit 是完整对照）：
+#   1. vars.REGISTRY 改回原 registry；vars.DEPLOY_SERVICE 换回 vars.DEPLOY_PATH
+#   2. action 引用改回原 mirror（两个 Gitea 实例都有同名镜像仓）
+#   3. 加回 setup-buildx-action 并钉 moby/buildkit:v0.13.2（老内核不支持 runc 1.2+
+#      的 openat2/fsmount），同时加回 cache-from/cache-to registry cache —— 那边
+#      buildx 每次起新 buildkit 容器，不靠 registry cache 层缓存会丢
+#   4. deploy 改回独立 job + 直接 cd vars.DEPLOY_PATH（host 模式下本地路径）
 
 on:
   push:
@@ -34,25 +48,24 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # action 走 Gitea 镜像仓的全 URL 引用 —— 对云端 runner 就是本机，clone 秒级。
+      # 用 `actions/checkout@v4` 短写法会被解析到 github.com，那台机在国内拉不动
+      # （实测 connection timed out / unexpected EOF）。
       - name: Checkout target branch
-        uses: actions/checkout@v4
+        uses: https://git.aifacely.net/mirror/checkout@v4
         with:
           ref: ${{ inputs.branch || github.ref_name }}
           fetch-depth: 0
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          # 钉 v0.13.2：runc 1.1.x，兼容老内核（不支持 openat2/fsmount 的 host）
-          driver-opts: |
-            image=moby/buildkit:v0.13.2
+      # 不用 setup-buildx-action：mirror 里没有它，这里也不需要 —— 默认 docker
+      # driver 直接用宿主 daemon 的构建缓存，跨 run 持久。
 
       - name: Login to Container Registry
-        uses: docker/login-action@v3
+        uses: https://git.aifacely.net/mirror/login-action@v3
         with:
           registry: ${{ vars.REGISTRY }}
-          username: ${{ gitea.actor }}
-          password: ${{ secrets.PACKAGES_TOKEN }}
+          username: ${{ vars.IMAGE_OWNER }}
+          password: ${{ secrets.AIFACELY_REGISTRY_TOKEN }}
 
       - name: Determine image tag
         id: meta
@@ -69,12 +82,16 @@ jobs:
           echo "==> Image: $IMAGE_REF:$IMAGE_TAG"
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: https://git.aifacely.net/mirror/build-push-action@v6
         with:
           context: .
           push: true
-          cache-from: type=registry,ref=${{ steps.meta.outputs.image_ref }}:buildcache
-          cache-to: type=registry,ref=${{ steps.meta.outputs.image_ref }}:buildcache,mode=min,ignore-error=true
+          # provenance/sbom 关掉：默认会多推一层 attestation manifest，
+          # Gitea registry 支持不好。
+          provenance: false
+          sbom: false
+          # image.source 指本仓事实源，镜像只是暂存在 registry。
+          # 清理脚本（nas-janitor）靠这个精确值找自家产物。
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.meta.outputs.full_sha }}
@@ -96,34 +113,29 @@ jobs:
             echo "| 镜像 | \`${{ steps.meta.outputs.image_ref }}:${{ steps.meta.outputs.image_tag }}\` + \`:latest\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  deploy:
-    # 仅在 build 成功 + 配置了 vars.DEPLOY_PATH 时运行。
-    # DEPLOY_PATH 留空（例如开源镜像里的 GitHub）就跳过——不向公开仓库暴露 NAS 路径。
-    needs: build
-    if: ${{ vars.DEPLOY_PATH != '' }}
-    runs-on: ubuntu-latest
-    steps:
-      # DEPLOY_PATH 的上一层是 compose 仓库的 clone（origin 已嵌只读 token），
-      # deploy 前先 git pull 把 compose 改动带上；pull 失败只告警不阻断镜像部署。
-      - name: Sync compose repo
-        run: |
-          COMPOSE_ROOT="$(dirname "${{ vars.DEPLOY_PATH }}")"
-          git -c safe.directory="$COMPOSE_ROOT" -C "$COMPOSE_ROOT" pull --ff-only \
-            || echo "::warning::compose repo pull failed — deploying with existing compose"
-
-      - name: Login to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ vars.REGISTRY }}
-          username: ${{ gitea.actor }}
-          password: ${{ secrets.PACKAGES_TOKEN }}
-
-      - name: Pull and restart
+      # ---- deploy ----
+      # 仅在配置了 vars.DEPLOY_SERVICE 时运行。留空（例如开源镜像里的 GitHub）就跳过。
+      #
+      # 云端 runner 摸不到部署目标的本地路径，改成 ssh 过去触发。目标侧是 ssh 强制
+      # 命令（nas-infra/scripts/ci-deploy.sh），这把 key 只能触发白名单内的 compose
+      # 重启，拿不到 shell。ssh 最后那个参数会被当成 SSH_ORIGINAL_COMMAND 做白名单
+      # 精确匹配，不是在目标机上执行的 shell 命令。
+      - name: Deploy
+        if: ${{ vars.DEPLOY_SERVICE != '' }}
         run: |
           set -e
-          cd "${{ vars.DEPLOY_PATH }}"
-          docker compose pull
-          docker compose up -d
-          sleep 3
-          docker compose ps
-          docker compose logs --tail=30
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.NAS_CI_SSH_KEY }}" > ~/.ssh/nas_ci
+          chmod 600 ~/.ssh/nas_ci
+          printf '%s\n' "${{ secrets.NAS_SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts_nas
+          chmod 600 ~/.ssh/known_hosts_nas
+          ssh -i ~/.ssh/nas_ci \
+              -o UserKnownHostsFile=~/.ssh/known_hosts_nas \
+              -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              -o ConnectTimeout=30 \
+              tao@${{ secrets.NAS_SSH_HOST }} "deploy ${{ vars.DEPLOY_SERVICE }}"
+
+      - name: Cleanup key
+        if: always()
+        run: rm -f ~/.ssh/nas_ci
