@@ -144,12 +144,15 @@ docker run --rm -p 8080:8080 \
   gitea-mcp
 ```
 
-仓库内的 `.gitea/workflows/build-image.yml` 在每次推送到 `main` 时构建并推送镜像，并可选在 runner 主机上重启容器（由下方 `vars.DEPLOY_PATH` 控制）。需要在仓库设置中配置：
+仓库内的 `.gitea/workflows/build-image.yml` 是 Gitea Actions 工作流：构建镜像，推成 `<REGISTRY>/<IMAGE_OWNER>/gitea-mcp:<短 sha>` 与 `:latest`，然后可选地经 SSH 触发重新部署。需要这些仓库 Variables / Secrets：
 
-- `vars.REGISTRY` —— registry 主机名（例如 `ghcr.io`，自建 Gitea Container Registry 写 `git.example.com`）
-- `vars.IMAGE_OWNER` —— registry 的 owner / namespace
-- `secrets.PACKAGES_TOKEN` —— registry 推送 token
-- `vars.DEPLOY_PATH` —— *(可选)* runner 主机上某个 docker-compose 目录的路径。配上之后 workflow 会跑一个 `deploy` 后续 job：`cd` 到这个目录后 `docker compose up -d` 拉新镜像。留空只 build & push。
+- `vars.REGISTRY` —— registry 主机名（例如 Gitea Container Registry 的 `git.example.com`）
+- `vars.IMAGE_OWNER` —— registry 下的 owner / 命名空间（也是登录用户名）
+- `secrets.AIFACELY_REGISTRY_TOKEN` —— registry 推送 token（`write:package`）
+- `vars.DEPLOY_SERVICE` —— *（可选）* 以 `deploy <service>` 传给部署主机的服务名；留空则只构建、推送
+- `secrets.NAS_CI_SSH_KEY`、`secrets.NAS_SSH_HOST`、`secrets.NAS_SSH_KNOWN_HOSTS` —— 仅配了 `DEPLOY_SERVICE` 时需要：SSH 私钥（在目标机上限定为强制部署命令）、主机、固定的 host key 行
+
+工作流里的 action 引用与构建代理指向作者自己的 CI 环境，fork 后请自行调整。
 
 ## Choosing an AS
 

@@ -150,15 +150,23 @@ docker run --rm -p 8080:8080 \
   gitea-mcp
 ```
 
-The included `.gitea/workflows/build-image.yml` builds and pushes the image
-on every push to `main`, then optionally redeploys the container on the
-runner host (controlled by `vars.DEPLOY_PATH`, see below). It expects these
+The included `.gitea/workflows/build-image.yml` is a Gitea Actions workflow
+that builds the image, pushes it as `<REGISTRY>/<IMAGE_OWNER>/gitea-mcp:<short sha>`
+and `:latest`, then optionally triggers a redeploy over SSH. It expects these
 repository Variables / Secrets:
 
-- `vars.REGISTRY` — registry hostname (e.g. `ghcr.io`, or `git.example.com` for Gitea Container Registry)
-- `vars.IMAGE_OWNER` — registry owner/namespace
-- `secrets.PACKAGES_TOKEN` — registry push token
-- `vars.DEPLOY_PATH` — *(optional)* path to a docker-compose directory on the runner host. When set, the workflow runs a follow-up `deploy` job that `cd`s into this directory and `docker compose up -d` to pull the new image. Leave empty to only build & push.
+- `vars.REGISTRY` — registry hostname (e.g. `git.example.com` for the Gitea
+  Container Registry)
+- `vars.IMAGE_OWNER` — registry owner / namespace (also the login user)
+- `secrets.AIFACELY_REGISTRY_TOKEN` — registry push token (`write:package`)
+- `vars.DEPLOY_SERVICE` — *(optional)* service name passed to the deploy host
+  as `deploy <service>`; leave empty to only build & push
+- `secrets.NAS_CI_SSH_KEY`, `secrets.NAS_SSH_HOST`, `secrets.NAS_SSH_KNOWN_HOSTS`
+  — only needed with `DEPLOY_SERVICE`: the SSH key (restricted on the host to a
+  forced deploy command), the host, and its pinned host key line
+
+The action references and build proxy lines point at the author's CI setup;
+adjust them in a fork.
 
 ## Choosing an AS
 
