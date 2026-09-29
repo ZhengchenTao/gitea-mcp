@@ -70,6 +70,7 @@ Gitea REST API
 | `Jwt__Audience` | `gitea` | 否 | 期望的 `aud` claim |
 | `Jwt__SigningKey__Current` | — | 仅 HS256 | HS256 签名密钥，与你的 AS 共享 |
 | `Jwt__SigningKey__Previous` | — | 否 | 轮换窗口内的旧 HS256 密钥 |
+| `Jwt__ValidTypes__0`、`__1`… | *(空 = 不校验)* | 否 | 仅 RS256：允许的 JWT header `typ`。AS 用同一把钥同时签 id_token 与 access token 时（如 nas-auth）设为 `at+jwt`（RFC 9068），id_token 就无法冒充 access token |
 | `Mcp__OAuthDiscovery__Issuer` | — | **是** | `/.well-known` 中的 `issuer` 字段 |
 | `Mcp__OAuthDiscovery__AuthorizationEndpoint` | — | **是** | 你 AS 的 `/authorize` URL |
 | `Mcp__OAuthDiscovery__TokenEndpoint` | — | **是** | 你 AS 的 `/token` URL |
@@ -166,8 +167,7 @@ Claude.ai 网页端强制走完整的 OAuth Authorization Code + PKCE 流程，�
 **Self-hosted, full-featured** —— RS256 模式：
 [Keycloak](https://www.keycloak.org)、[ZITADEL](https://github.com/zitadel/zitadel)、[Logto](https://github.com/logto-io/logto)、[Authentik](https://goauthentik.io)。
 
-**Self-hosted, minimal** —— HS256 模式：
-参见 [nas-auth](https://github.com/ZhengchenTao/nas-auth) —— 本 server 在开发过程中对接的那个约 500 行 LoC 的参考 AS。或者自己写一个。MCP server 的 `Jwt__SigningKey__Current` 必须与 AS 的签名密钥保持一致。
+**Self-hosted, minimal** —— [nas-auth](https://github.com/ZhengchenTao/nas-auth)，本 server 开发时对接的小型 AS（DCR + PKCE + RFC 8707/9728）。用 RS256 模式：`Jwt__Issuer=<nas-auth 的 issuer>`，并设 `Jwt__ValidTypes__0=at+jwt`。HS256 模式（共享对称密钥，`Jwt__SigningKey__Current` 须与 AS 一致）仍保留给自建的极简 AS。
 
 **不论选哪条，AS 必须支持：**
 - OAuth 2.1 + PKCE（RFC 7636）

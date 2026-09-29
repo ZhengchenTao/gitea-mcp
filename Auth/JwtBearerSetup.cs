@@ -58,6 +58,13 @@ public static class JwtBearerSetup
                     // 由 ConfigurationManager 在验签时动态注入，无需在此设置。
                     options.Authority = jwtOpts.Issuer;
                     options.RequireHttpsMetadata = !IsLocalhostUrl(jwtOpts.Issuer);
+
+                    // 钉死 RS256，防算法混淆。typ 校验按配置开（见 JwtOptions.ValidTypes）：
+                    // nas-auth 这类 AS 用同一把 RSA 钥也签 id_token，要设 at+jwt 才能把它挡在外面。
+                    tvp.ValidAlgorithms = new[] { SecurityAlgorithms.RsaSha256 };
+                    var validTypes = (jwtOpts.ValidTypes ?? Array.Empty<string>())
+                        .Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()).ToArray();
+                    if (validTypes.Length > 0) tvp.ValidTypes = validTypes;
                 }
                 else if (algorithm == "HS256")
                 {

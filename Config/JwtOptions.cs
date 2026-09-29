@@ -2,7 +2,7 @@ namespace GiteaMcp.Config;
 
 /// <summary>
 /// JWT 验签配置。
-/// 环境变量：Jwt__Algorithm, Jwt__Issuer, Jwt__Audience, Jwt__SigningKey__Current, Jwt__SigningKey__Previous
+/// 环境变量：Jwt__Algorithm, Jwt__Issuer, Jwt__Audience, Jwt__ValidTypes__N, Jwt__SigningKey__Current, Jwt__SigningKey__Previous
 /// </summary>
 public class JwtOptions
 {
@@ -24,6 +24,14 @@ public class JwtOptions
 
     /// <summary>期望的 aud claim，默认 gitea</summary>
     public string Audience { get; set; } = "gitea";
+
+    /// <summary>
+    /// RS256 模式下允许的 JWT header <c>typ</c>，env: Jwt__ValidTypes__0, Jwt__ValidTypes__1 …
+    /// 留空 = 不校验（兼容 typ 为 JWT 的托管 AS）。AS 用同一把钥同时签 id_token 与 access token 时
+    /// （如 nas-auth）应设为 <c>at+jwt</c>（RFC 9068），否则 client_id 恰好等于本服务 Audience 的
+    /// id_token 会被当成 access token 放行。HS256 模式下忽略。
+    /// </summary>
+    public string[] ValidTypes { get; set; } = Array.Empty<string>();
 
     /// <summary>HS256 模式使用；RS256 模式下忽略。</summary>
     public SigningKeyPair SigningKey { get; set; } = new();

@@ -74,6 +74,7 @@ All tools require a valid JWT with `scope=read:gitea`.
 | `Jwt__Audience` | `gitea` | no | Expected `aud` claim |
 | `Jwt__SigningKey__Current` | — | HS256 only | HS256 signing key, shared with your AS |
 | `Jwt__SigningKey__Previous` | — | no | Previous HS256 key for rotation window |
+| `Jwt__ValidTypes__0`, `__1`, … | *(empty = no check)* | no | RS256 only: allowed JWT header `typ` values. Set to `at+jwt` (RFC 9068) when your AS signs id_tokens with the same key as access tokens (e.g. nas-auth), so an id_token can never pass as an access token |
 | `Mcp__OAuthDiscovery__Issuer` | — | **yes** | `/.well-known` `issuer` field |
 | `Mcp__OAuthDiscovery__AuthorizationEndpoint` | — | **yes** | Your AS's `/authorize` URL |
 | `Mcp__OAuthDiscovery__TokenEndpoint` | — | **yes** | Your AS's `/token` URL |
@@ -178,8 +179,7 @@ Public keys are fetched automatically from `<Issuer>/.well-known/openid-configur
 **Self-hosted, full-featured** — RS256 mode:
 [Keycloak](https://www.keycloak.org), [ZITADEL](https://github.com/zitadel/zitadel), [Logto](https://github.com/logto-io/logto), [Authentik](https://goauthentik.io).
 
-**Self-hosted, minimal** — HS256 mode:
-See [nas-auth](https://github.com/ZhengchenTao/nas-auth) — the reference ~500 LoC AS this server was developed against. Or write your own. The MCP server's `Jwt__SigningKey__Current` and the AS's signing key must match.
+**Self-hosted, minimal** — [nas-auth](https://github.com/ZhengchenTao/nas-auth), the small AS this server was developed against (DCR + PKCE + RFC 8707/9728). Use RS256 mode with `Jwt__Issuer=<nas-auth issuer>` and `Jwt__ValidTypes__0=at+jwt`. HS256 mode (shared symmetric key, `Jwt__SigningKey__Current` must equal the AS's key) remains for self-built minimal servers.
 
 **Required AS features regardless of choice:**
 - OAuth 2.1 + PKCE (RFC 7636)
