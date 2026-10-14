@@ -2,13 +2,13 @@
 
 [English](README.md) | 简体中文
 
-一个 [MCP](https://modelcontextprotocol.io/) 服务，让 AI 客户端读取 [Gitea](https://about.gitea.com/) 仓库，并在独立 scope、服务端仓库白名单和分支保护约束下写入文件、创建分支与 PR。读取和写入分别使用服务端令牌；客户端只拿 OAuth access token，所以 Gitea 令牌不会交到 Claude、ChatGPT 或其他连上来的客户端手里。
+一个 [MCP](https://modelcontextprotocol.io/) 服务，让 AI 客户端读取 [Gitea](https://about.gitea.com/) 仓库，并在独立 scope、Gitea 账号权限和分支保护约束下写入文件、创建分支与 PR。读取和写入分别使用服务端令牌；客户端只拿 OAuth access token，所以 Gitea 令牌不会交到 Claude、ChatGPT 或其他连上来的客户端手里。
 
 ## 三个仓怎么配合
 
 - [nas-auth](https://github.com/ZhengchenTao/nas-auth)：授权服务，负责登录和签发 token。
 - [obsidian-mcp](https://github.com/ZhengchenTao/obsidian-mcp)：Obsidian 笔记库的 MCP 服务（可读写）。
-- [gitea-mcp](https://github.com/ZhengchenTao/gitea-mcp)：Gitea 的 MCP 服务（读取 + 白名单写入）。
+- [gitea-mcp](https://github.com/ZhengchenTao/gitea-mcp)：Gitea 的 MCP 服务（读取 + 按账号权限写入）。
 
 MCP 客户端从 MCP 服务的元数据里找到授权服务，自己注册，让用户登录，拿到一个只对这一个 MCP 服务有效的 token。MCP 服务用 nas-auth 公布的公钥验 token，碰不到密码，也不需要和谁共享密钥。三个仓也可以单独用：两个 MCP 服务能接任何标准的 OAuth 服务，nas-auth 也能给任何会验 JWT 的服务做登录。
 
@@ -49,11 +49,11 @@ Gitea REST API
 | `merge_pull_request` | 合并已审查的 PR；必须传当前 PR head SHA，支持 merge / squash / rebase 等方式，拒绝失败或未完成的 CI，不强制合并、不删除源分支 |
 | `get_diff` | 读取一个 Commit 的 diff，或比较两个 ref |
 
-`/mcp` 整体仍要求原有 `read:gitea`。写工具另行校验 `write:gitea`、精确仓库白名单和独立写 PAT；白名单默认空，拒绝全部写入。`commit_files` / `upsert_file` / `delete_file` 支持直接提交 `main`、`master` 或默认分支，保留文件 SHA 与分支 HEAD 校验；能否推送由 Gitea 的账号权限与原生分支保护规则决定。`Gitea__WriteProtectedBranches` 可额外禁止指定分支，默认空。文件路径必须是仓库内相对路径，拒绝路径穿越。默认限制为单次最多 20 个文件、单文件 256 KiB、文件内容合计 1 MiB、HTTP 请求体 8 MiB。
+`/mcp` 整体仍要求原有 `read:gitea`。写工具另行校验 `write:gitea` 和独立写 PAT；不设写仓白名单，允许操作该 Gitea 账号有写权限的所有仓库。`commit_files` / `upsert_file` / `delete_file` 支持直接提交 `main`、`master` 或默认分支，保留文件 SHA 与分支 HEAD 校验；能否推送由 Gitea 的账号权限与原生分支保护规则决定。`Gitea__WriteProtectedBranches` 可额外禁止指定分支，默认空。文件路径必须是仓库内相对路径，拒绝路径穿越。默认限制为单次最多 20 个文件、单文件 256 KiB、文件内容合计 1 MiB、HTTP 请求体 8 MiB。
 
 合并流程：`read_pull` → 审查 `get_diff` → 将 `head_sha` 传给 `merge_pull_request.expectedHeadSha`。服务先检查当前 head 和已有 CI 状态，再把 `head_commit_id` 交给 Gitea 原子校验；上游要求的审查和检查仍须满足。无 CI 的仓库可以合并，已有 CI 必须成功。超时后先读 PR，不自动重放合并请求。也可直接给 `commit_files.branch=main` 提交，仍需最新 `expectedHeadSha`。
 
-写入错误会以可操作的 MCP tool error 返回，区分 scope / PAT 不足、仓库或分支不在白名单、文件 SHA 冲突、分支 HEAD 冲突和超时结果未知。结果未知时先检查分支 / Diff 或 PR，不要盲目重放。
+写入错误会以可操作的 MCP tool error 返回，区分 scope / PAT 不足、Gitea 仓库权限或分支规则拒绝、文件 SHA 冲突、分支 HEAD 冲突和超时结果未知。结果未知时先检查分支 / Diff 或 PR，不要盲目重放。
 
 推荐流程：先检查现有文件 → `create_branch` → 在工作分支上用 `list_tree` 获取文件 blob SHA，用 `create_branch` 返回的 SHA 获取初始 HEAD → 用 `read_file` 读取内容 → `commit_files` → 后续提交用返回的 `commit_sha` 作为新 `expectedHeadSha` → `get_diff` → `create_pull_request` → 用 `read_pull` 复核。
 
@@ -63,7 +63,7 @@ Gitea REST API
 
 现有 `Gitea__AdminPat` 只供 API 读取客户端使用。若能单独签发只读 PAT，建议只勾 `read:repository`、`read:organization`、`read:package`、`read:issue`、`read:user`，不加 `write:` 或 `admin:`。工具能看到的就是这个令牌能看到的；用普通用户令牌，本服务就只能看到这个用户的仓库；`Gitea__RepoBlacklist` 可以再额外隐藏仓库。
 
-写入另配一个 `Gitea__WritePat`，使用非管理员账号；该账号只应对目标仓库有写权限（若当前 Gitea 版本支持仓库级 token，就限制到该仓库），PAT 只授予 `write:repository`。Gitea 从 v1.23 起支持细粒度 PAT scope。读 API 客户端仍使用 `Gitea__AdminPat`，所有变更工具只使用独立的 `Gitea__WritePat`；不要给所有 OAuth 客户端共享管理员写 token。`Gitea__WritePat` 留空时写工具关闭；同时必须配置精确的 `Gitea__WriteRepoAllowlist`，例如 `dev/room-organizer`。
+写入另配一个 `Gitea__WritePat`，使用非管理员账号；该账号只应对目标仓库有写权限（若当前 Gitea 版本支持仓库级 token，就限制到该仓库），PAT 只授予 `write:repository`。Gitea 从 v1.23 起支持细粒度 PAT scope。读 API 客户端仍使用 `Gitea__AdminPat`，所有变更工具只使用独立的 `Gitea__WritePat`；不要给所有 OAuth 客户端共享管理员写 token。`Gitea__WritePat` 留空时写工具关闭；仓库访问范围由该账号的 Gitea 权限决定，不需要配置写仓白名单。
 
 任一令牌泄露：在 Gitea 里撤销并重新签发，只更新对应的 `Gitea__AdminPat` 或 `Gitea__WritePat`，然后重启。启用写入前确认实例版本支持上面两个接口；本地 Mock 测试不会连接 Gitea。
 
@@ -77,7 +77,6 @@ Gitea REST API
 | `Gitea__AdminPat` | – | API 读取客户端凭据；写请求不会使用它，必填 |
 | `Gitea__WritePat` | – | 独立的最小权限写令牌，可选；留空即关闭写入 |
 | `Gitea__RepoBlacklist` | – | 要隐藏的 `owner/repo`，逗号分隔 |
-| `Gitea__WriteRepoAllowlist` | 空 | 允许写入的精确 `owner/repo` 清单，逗号分隔；默认空即全部拒绝 |
 | `Gitea__WriteProtectedBranches` | 空 | 额外禁止直接提交的分支名；Gitea 自身保护仍然生效 |
 | `Gitea__DefaultLimit` | `50` | 列表类工具的默认条数 |
 | `Gitea__MaxFileBytes` | `1048576` | 单个文件或日志最多读多少字节 |
@@ -168,7 +167,7 @@ PAT 只授予 `write:repository`；`AdminPat` 只供读取 API，所有变更都
 并要求输入绑定到仓库与分支的确认文本。脚本保留测试分支和 PR 供复核，不删除仓库或测试数据。
 调用前设置 `GITEA_TEST_INSTANCE`、`GITEA_TEST_OWNER`、`GITEA_TEST_REPO`、
 `GITEA_TEST_ACCOUNT`、`GITEA_TEST_READ_PAT`（读取客户端 AdminPat）、
-`GITEA_TEST_WRITE_PAT` 和 `GITEA_TEST_JWT_KEY`；脚本启动本地 MCP 服务并把写入白名单限制为测试仓，
+`GITEA_TEST_WRITE_PAT` 和 `GITEA_TEST_JWT_KEY`；脚本启动本地 MCP 服务，其自身调用只针对指定测试仓，
 不改 nas-auth 或部署配置，也不会打印凭据。测试仓必须是私有且未归档。构建后运行
 `python .\gitea-mcp.Tests\Run-GiteaWriteIntegration.py`。
 

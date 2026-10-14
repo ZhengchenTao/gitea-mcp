@@ -286,7 +286,7 @@ def main() -> int:
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
     branch = f"codex-mcp-test-{run_id}"
     read_only_branch = f"feature/read-only-should-deny-{run_id}"
-    unallowlisted_repo = f"not-allowlisted-{run_id}"
+    nonexistent_repo = f"missing-repo-{run_id}"
     file_root = f"integration-tests/{run_id}"
     created_path = f"{file_root}/created.txt"
     deleted_path = f"{file_root}/delete-me.txt"
@@ -308,7 +308,6 @@ def main() -> int:
         "Gitea__BaseUrl": instance,
         "Gitea__AdminPat": read_pat,
         "Gitea__WritePat": write_pat,
-        "Gitea__WriteRepoAllowlist": f"{owner}/{repo}",
         "Jwt__Algorithm": "HS256",
         "Jwt__Issuer": ISSUER,
         "Jwt__Audience": "gitea",
@@ -381,7 +380,7 @@ def main() -> int:
         print(f"  Protected test : also attempts a direct write to {protected_branch_info['name']}")
         print(f"  Working branch : {branch}")
         print(f"  Read-only test : attempts to create {read_only_branch}; expected to stop at the MCP write:gitea check")
-        print(f"  Allowlist test : attempts repo {owner}/{unallowlisted_repo}; expected to stop before Gitea API access")
+        print(f"  Missing repo test : attempts repo {owner}/{nonexistent_repo}; expected to be rejected by Gitea")
         print(f"  Single-file API: upsert_file creates {standalone_path}; delete_file removes it in a separate commit")
         print(f"    content = {standalone_text.rstrip()!r}")
         print("  Commit 1       : create these two text files atomically:")
@@ -600,13 +599,13 @@ def main() -> int:
             "expectedHeadSha": protected_branch_info["last_commit"]["sha"],
             "message": f"test: protected branch must reject {run_id}",
             "changes": [{"operation": "create", "path": f"{file_root}/protected-branch-blocked.txt", "content": "blocked\n"}],
-        }, "protected branch")
+        }, "permission")
 
-        phase = "non-allowlisted repository rejection"
+        phase = "nonexistent repository rejection"
         session.expect_error("create_branch", {
-            "owner": owner, "repo": unallowlisted_repo,
+            "owner": owner, "repo": nonexistent_repo,
             "newBranch": f"feature/not-allowed-{run_id}", "fromRef": base_branch,
-        }, "allowlist")
+        }, "not found")
 
         phase = "read-only JWT rejection"
         read_only = McpSession(local_endpoint, read_token)
@@ -616,7 +615,7 @@ def main() -> int:
             "newBranch": read_only_branch, "fromRef": base_branch,
         }, "write:gitea")
 
-        print("\nPASS: branch creation, single-file upsert/delete, atomic multi-file create/update/delete, final remote state, stale file SHA/HEAD conflicts, default/protected branch rejection, diff, PR creation/read, allowlist rejection, and read-only JWT rejection.")
+        print("\nPASS: branch creation, single-file upsert/delete, atomic multi-file create/update/delete, final remote state, stale file SHA/HEAD conflicts, default/protected branch rejection, diff, PR creation/read, nonexistent repository rejection, and read-only JWT rejection.")
         print(f"Test repository: {owner}/{repo}")
         print(f"Working branch : {branch}")
         print(f"PR             : {pull.get('html_url')} (#{number})")

@@ -19,7 +19,7 @@ public class GiteaOptions
     public string AdminPat { get; set; } = string.Empty;
 
     /// <summary>
-    /// 独立的 Gitea 写入 PAT。留空时全部写入工具关闭；应使用仅对写入白名单仓库有写权限的非管理员账号。
+    /// 独立的 Gitea 写入 PAT。留空时全部写入工具关闭；仓库访问范围由该令牌所属账号权限决定。
     /// 环境变量：Gitea__WritePat。
     /// </summary>
     public string WritePat { get; set; } = string.Empty;
@@ -29,9 +29,6 @@ public class GiteaOptions
     /// 黑名单内的 repo 不会出现在任何 Tool 的返回值里。默认空（全开放）。
     /// </summary>
     public string RepoBlacklist { get; set; } = string.Empty;
-
-    /// <summary>允许写入的精确 owner/repo 清单，逗号分隔。默认空即拒绝所有写入。</summary>
-    public string WriteRepoAllowlist { get; set; } = string.Empty;
 
     /// <summary>额外禁止直接提交的分支名。默认空，允许 main/默认分支；Gitea 自身保护规则仍然生效。</summary>
     public string WriteProtectedBranches { get; set; } = string.Empty;

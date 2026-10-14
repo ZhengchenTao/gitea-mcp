@@ -82,14 +82,14 @@ public sealed class GiteaWriteToolsTests
         Assert.Equal(sourceSha, payload.RootElement.GetProperty("old_ref_name").GetString());
     }
 
-    [Fact]
-    public async Task RepositoryOutsideWriteAllowlist_IsRejectedBeforeGiteaCall()
+    [Theory]
+    [InlineData("dev", "room-organizer")]
+    [InlineData("zhengchen.tao", "gitea-mcp")]
+    [InlineData("another-owner", "another-repo")]
+    public void AnyRepository_IsAllowedWithWriteScopeAndPat(string owner, string repo)
     {
-        var env = CreateEnvironment("read:gitea write:gitea", writeAllowlist: "dev/another-repo");
-
-        await Assert.ThrowsAsync<McpException>(() =>
-            env.Tools.create_branch("dev", "room-organizer", "feature/test", "main"));
-
+        var env = CreateEnvironment("read:gitea write:gitea");
+        env.Policy.RequireWriteAccess(owner, repo);
         Assert.Empty(env.Handler.Requests);
     }
 
@@ -346,12 +346,10 @@ public sealed class GiteaWriteToolsTests
         Assert.Empty(env.Handler.Mutations);
     }
 
-    [Theory]
-    [InlineData("read:gitea", "dev/room-organizer")]
-    [InlineData("read:gitea write:gitea", "dev/another-repo")]
-    public async Task MergePullRequest_RequiresScopeAndRepositoryAllowlist(string scope, string allowlist)
+    [Fact]
+    public async Task MergePullRequest_StillRequiresWriteScope()
     {
-        var env = CreateEnvironment(scope, writeAllowlist: allowlist);
+        var env = CreateEnvironment("read:gitea");
         await Assert.ThrowsAsync<McpException>(() => env.Tools.merge_pull_request("dev", "room-organizer", 42, InitialHeadSha));
         Assert.Empty(env.Handler.Requests);
     }
@@ -377,7 +375,6 @@ public sealed class GiteaWriteToolsTests
 
     private static TestEnvironment CreateEnvironment(
         string scopes,
-        string writeAllowlist = "dev/room-organizer",
         bool protectedBranch = false,
         bool failBatch = false,
         bool existingBranch = false,
@@ -393,7 +390,6 @@ public sealed class GiteaWriteToolsTests
             BaseUrl = "https://gitea.test",
             AdminPat = "read-test-token",
             WritePat = writePat,
-            WriteRepoAllowlist = writeAllowlist,
             MaxWriteFiles = 20,
             MaxWriteFileBytes = 256 * 1024,
             MaxWriteRequestBytes = 1024 * 1024,
@@ -413,10 +409,10 @@ public sealed class GiteaWriteToolsTests
         var policy = new GiteaWritePolicy(accessor, options, filter);
         var factory = new FakeHttpClientFactory(handler);
         var api = new GiteaApiClient(factory, options, NullLogger<GiteaApiClient>.Instance, policy);
-        return new TestEnvironment(api, new WriteTools(api, filter, options), handler);
+        return new TestEnvironment(api, new WriteTools(api, filter, options), handler, policy);
     }
 
-    private sealed record TestEnvironment(GiteaApiClient Api, WriteTools Tools, FakeGiteaHandler Handler);
+    private sealed record TestEnvironment(GiteaApiClient Api, WriteTools Tools, FakeGiteaHandler Handler, GiteaWritePolicy Policy);
 
     private sealed class FakeHttpClientFactory(FakeGiteaHandler handler) : IHttpClientFactory
     {

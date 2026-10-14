@@ -10,7 +10,7 @@ namespace GiteaMcp.Services;
 
 /// <summary>
 /// Server-side write boundary. The MCP endpoint still requires read:gitea for compatibility;
-/// every write API call additionally requires write:gitea and an exact repository allowlist entry.
+/// every write API call additionally requires write:gitea and a separate write PAT.
 /// </summary>
 public sealed class GiteaWritePolicy
 {
@@ -20,7 +20,6 @@ public sealed class GiteaWritePolicy
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly GiteaOptions _options;
     private readonly GiteaRepoFilter _repoFilter;
-    private readonly HashSet<string> _writeAllowlist;
     private readonly HashSet<string> _protectedBranches;
 
     public GiteaWritePolicy(
@@ -31,7 +30,6 @@ public sealed class GiteaWritePolicy
         _httpContextAccessor = httpContextAccessor;
         _options = options.Value;
         _repoFilter = repoFilter;
-        _writeAllowlist = ParseSet(_options.WriteRepoAllowlist);
         _protectedBranches = ParseSet(_options.WriteProtectedBranches);
     }
 
@@ -48,10 +46,6 @@ public sealed class GiteaWritePolicy
 
         if (_repoFilter.IsBlocked(fullName))
             throw new UnauthorizedAccessException($"Repository {fullName} is blocked by Gitea:RepoBlacklist.");
-
-        if (_writeAllowlist.Count == 0 || !_writeAllowlist.Contains(fullName))
-            throw new UnauthorizedAccessException(
-                $"Repository {fullName} is not in the Gitea write allowlist.");
 
         if (string.IsNullOrWhiteSpace(_options.WritePat))
             throw new InvalidOperationException(

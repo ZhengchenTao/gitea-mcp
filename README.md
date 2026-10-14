@@ -16,7 +16,7 @@ instead, so neither Gitea token reaches Claude, ChatGPT or whatever else you con
 - [obsidian-mcp](https://github.com/ZhengchenTao/obsidian-mcp): MCP server for
   an Obsidian vault (read and write).
 - [gitea-mcp](https://github.com/ZhengchenTao/gitea-mcp): MCP server for a
-  Gitea instance (read plus allowlisted writes).
+  Gitea instance (reads and writes permitted by the Gitea account).
 
 An MCP client finds the authorization server through the MCP server's
 metadata, registers itself, lets the user sign in, and gets a token that is
@@ -61,7 +61,7 @@ All tools need `scope=read:gitea`. Write tools additionally require `scope=write
 | `create_pull_request` | Open a PR from a working branch to a target branch |
 | `get_diff` | Read one commit diff or compare two refs |
 
-The `/mcp` endpoint keeps the existing `read:gitea` gate. A write call also checks `write:gitea`, an exact server-side repository allowlist and a separate write PAT. The allowlist is empty by default. Direct commits to `main`, `master` and the repository default branch are supported, with file SHA and branch HEAD checks. Gitea enforces the token's push permissions and native branch protection. `Gitea__WriteProtectedBranches` can additionally block specific branches and defaults to empty. File paths are relative and traversal segments are rejected. The server defaults to at most 20 files, 256 KiB per file, 1 MiB total file content, and an 8 MiB HTTP request body.
+The `/mcp` endpoint keeps the existing `read:gitea` gate. A write call also requires `write:gitea` and a separate write PAT. There is no repository write allowlist: all repositories writable by that Gitea account are available. Direct commits to `main`, `master` and the repository default branch are supported, with file SHA and branch HEAD checks. Gitea enforces the token's push permissions and native branch protection. `Gitea__WriteProtectedBranches` can additionally block specific branches and defaults to empty. File paths are relative and traversal segments are rejected. The server defaults to at most 20 files, 256 KiB per file, 1 MiB total file content, and an 8 MiB HTTP request body.
 
 `merge_pull_request` merges a reviewed PR using a mandatory `expectedHeadSha` from `read_pull.head_sha`. Supported styles are `merge`, `squash`, `rebase`, `rebase-merge` and `fast-forward-only`. Existing CI must succeed; repositories without CI can merge. Gitea atomically checks `head_commit_id` and enforces required reviews and repository rules. The tool never force-merges or deletes the source branch, and never replays a merge after a timeout. Read the PR to resolve an unknown outcome. To commit directly to main, use `commit_files` with `branch=main` and its current `expectedHeadSha`.
 
@@ -85,8 +85,7 @@ account write access only to the intended repository (use a repository-restricte
 token if the Gitea version supports it) and grant only `write:repository`.
 Gitea's granular token scopes are available from v1.23. Never route write calls
 through the existing read client or broadly share a write token. `Gitea__WritePat`
-is optional; if it is empty, write tools are disabled. `Gitea__WriteRepoAllowlist`
-must also name the exact repositories, for example `dev/room-organizer`.
+is optional; if it is empty, write tools are disabled. Repository access follows the Gitea account permissions.
 
 If either token leaks, revoke it in Gitea and replace only the corresponding
 `Gitea__AdminPat` or `Gitea__WritePat`, then restart. Before enabling writes,
@@ -102,7 +101,6 @@ Environment variables, `__` for nesting.
 | `Gitea__AdminPat` | – | Credential for the read API client; write calls never use it. Required. |
 | `Gitea__WritePat` | – | Separate least-privilege write token. Optional; blank disables writes. |
 | `Gitea__RepoBlacklist` | – | Comma-separated `owner/repo` to hide |
-| `Gitea__WriteRepoAllowlist` | empty | Exact comma-separated `owner/repo` entries allowed to write; empty denies all writes |
 | `Gitea__WriteProtectedBranches` | Empty | Extra branch names that cannot receive direct commits; native Gitea protection still applies |
 | `Gitea__DefaultLimit` | `50` | Default page size for list tools |
 | `Gitea__MaxFileBytes` | `1048576` | Largest file or log read, in bytes |
@@ -203,7 +201,7 @@ Tests: `dotnet test gitea-mcp.Tests`.
 
 For a real but opt-in HTTP/MCP integration run, see
 [`Run-GiteaWriteIntegration.py`](gitea-mcp.Tests/Run-GiteaWriteIntegration.py).
-It requires an exact allowlisted test repository (`zhengchen.tao/gitea-mcp-write-test`
+It requires an exact test repository (`zhengchen.tao/gitea-mcp-write-test`
 or the existing `zhengchen.tao/gitea-pr-selftest` scratch repo), the same
 `Gitea__AdminPat` credential used by the local read client, and a separate
 non-admin `Gitea__WritePat` account with write access only to that test repo.
@@ -216,7 +214,7 @@ the test branch and PR for review and never deletes the repository or test data.
 Set `GITEA_TEST_INSTANCE`, `GITEA_TEST_OWNER`, `GITEA_TEST_REPO`,
 `GITEA_TEST_ACCOUNT`, `GITEA_TEST_READ_PAT` (the read client's AdminPat),
 `GITEA_TEST_WRITE_PAT`, and `GITEA_TEST_JWT_KEY` in the invoking environment.
-The script starts a local server with a one-repository allowlist and does not
+The script restricts its own calls to the test repository and does not
 change nas-auth or deployment settings. Secret values are never printed. The
 test repo must be private and non-archived. Run
 `python .\gitea-mcp.Tests\Run-GiteaWriteIntegration.py` after building.
