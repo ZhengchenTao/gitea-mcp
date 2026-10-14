@@ -193,6 +193,42 @@ public sealed class WriteTools(
         return new { diff };
     }
 
+    [McpServerTool]
+    [Description(
+        "Trigger a Gitea Actions workflow on a specified branch, tag or commit. The workflow must support workflow_dispatch. " +
+        "Use list_workflows for workflowId and read_file to inspect required inputs. Inputs are string values, including booleans encoded as true/false. " +
+        "Requires write:gitea and the Gitea account's repository/Actions permission; no repository allowlist. " +
+        "May run builds or deployments configured in that workflow. Returns accepted status, run ID and URL when supported; follow with list_workflow_runs/read_run_log. " +
+        "Never automatically replays a dispatch after a timeout; inspect runs before retrying.")]
+    public Task<object> dispatch_workflow(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string repo,
+        [Description("Workflow filename/ID from list_workflows, for example build-image.yml.")] string workflowId,
+        [Description("Branch, tag or commit ref to run, for example main or refs/heads/main.")] string reference,
+        [Description("Workflow inputs as key/string-value pairs. Omit if there are no inputs.")] IReadOnlyDictionary<string, string>? inputs = null,
+        CancellationToken ct = default)
+        => ExposeWriteErrorAsync(async () =>
+        {
+            var result = await gitea.DispatchWorkflowAsync(owner, repo, workflowId, reference, inputs, ct);
+            return new { accepted = true, workflow_id = workflowId, @ref = reference, run_id = result.RunId, html_url = result.HtmlUrl, run_url = result.RunUrl };
+        });
+
+    [McpServerTool]
+    [Description(
+        "Rerun an existing Gitea Actions workflow run with all its jobs. Use list_workflow_runs to select run_id. " +
+        "Requires write:gitea and Gitea Actions permission. Reuses the run's original code/ref and may repeat deployments or other workflow effects. " +
+        "Returns the upstream run ID and URL. On an unknown outcome, inspect list_workflow_runs/read_run_log before retrying.")]
+    public Task<object> rerun_workflow_run(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string repo,
+        [Description("Existing workflow run ID from list_workflow_runs.")] long run_id,
+        CancellationToken ct = default)
+        => ExposeWriteErrorAsync(async () =>
+        {
+            var run = await gitea.RerunWorkflowAsync(owner, repo, run_id, ct);
+            return new { accepted = true, run_id = run.Id, status = run.Status, html_url = run.HtmlUrl };
+        });
+
     private static object FormatCommit(GiteaFilesResponse result, IReadOnlyList<string> paths) => new
     {
         commit_sha = result.Commit?.Sha,

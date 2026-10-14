@@ -42,6 +42,9 @@ Gitea REST API
 | `list_orgs`、`read_org` | 组织 |
 | `list_packages`、`read_package` | 按 owner 列软件包（容器、generic、npm …）；单个版本 |
 | `list_workflow_runs`、`read_run_log` | Actions 运行记录；单次运行的 job 和日志末尾 |
+| `list_workflows` | 列出 workflow 的文件名/ID、名称和启用状态 |
+| `dispatch_workflow` | 指定 workflow、branch/tag/commit ref 和字符串 inputs 手动触发 CI；workflow 必须支持 `workflow_dispatch` |
+| `rerun_workflow_run` | 按 run ID 重跑已有 CI 的全部 jobs |
 | `create_branch` | 从分支、tag 或 Commit SHA 创建工作分支 |
 | `upsert_file`、`delete_file` | 在工作分支新增 / 更新 / 删除单个 UTF-8 文本文件；每次写入都要给 `expectedHeadSha`，更新 / 删除还要给文件 blob `expectedSha` |
 | `commit_files` | 最多 20 个文件的新增、修改和删除；必须给分支 HEAD，修改 / 删除项还要给文件 SHA |
@@ -52,6 +55,8 @@ Gitea REST API
 `/mcp` 整体仍要求原有 `read:gitea`。写工具另行校验 `write:gitea` 和独立写 PAT；不设写仓白名单，允许操作该 Gitea 账号有写权限的所有仓库。`commit_files` / `upsert_file` / `delete_file` 支持直接提交 `main`、`master` 或默认分支，保留文件 SHA 与分支 HEAD 校验；能否推送由 Gitea 的账号权限与原生分支保护规则决定。`Gitea__WriteProtectedBranches` 可额外禁止指定分支，默认空。文件路径必须是仓库内相对路径，拒绝路径穿越。默认限制为单次最多 20 个文件、单文件 256 KiB、文件内容合计 1 MiB、HTTP 请求体 8 MiB。
 
 合并流程：`read_pull` → 审查 `get_diff` → 将 `head_sha` 传给 `merge_pull_request.expectedHeadSha`。服务先检查当前 head 和已有 CI 状态，再把 `head_commit_id` 交给 Gitea 原子校验；上游要求的审查和检查仍须满足。无 CI 的仓库可以合并，已有 CI 必须成功。超时后先读 PR，不自动重放合并请求。也可直接给 `commit_files.branch=main` 提交，仍需最新 `expectedHeadSha`。
+
+触发 CI：`list_workflows` → `read_file` 检查 workflow 的 `workflow_dispatch.inputs` → `dispatch_workflow(owner, repo, workflowId, reference, inputs)` → `list_workflow_runs` / `read_run_log` 查结果。inputs 的值均为字符串（布尔值传 `"true"` / `"false"`）。返回 `accepted=true` 只表示请求已接收，不表示 CI 已成功；支持时同时返回 `run_id` 与 `html_url`。已有运行可通过 `rerun_workflow_run` 重跑。两个写工具仍要求 `write:gitea` 和 Gitea 账号权限，不设仓库白名单；不自动重试，超时先查运行记录，避免重复构建或部署。
 
 写入错误会以可操作的 MCP tool error 返回，区分 scope / PAT 不足、Gitea 仓库权限或分支规则拒绝、文件 SHA 冲突、分支 HEAD 冲突和超时结果未知。结果未知时先检查分支 / Diff 或 PR，不要盲目重放。
 

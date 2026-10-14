@@ -12,6 +12,22 @@ public class ActionsTools(
     GiteaRepoFilter filter)
 {
     [McpServerTool]
+    [Description("List repository workflows with their filename/ID, name, path and active/disabled state. Read the workflow file to inspect workflow_dispatch inputs, then use dispatch_workflow to trigger a run.")]
+    public async Task<object> list_workflows(
+        [Description("Repository owner.")] string owner,
+        [Description("Repository name.")] string repo,
+        CancellationToken ct = default)
+    {
+        if (filter.IsBlocked($"{owner}/{repo}"))
+            throw new UnauthorizedAccessException($"Repo {owner}/{repo} is on the access blocklist.");
+        var result = await gitea.GetWorkflowsAsync(owner, repo, ct);
+        return new { total = result.TotalCount, workflows = result.Workflows.Select(w => new
+        {
+            id = w.Id, name = w.Name, path = w.Path, state = w.State, html_url = w.HtmlUrl,
+        }).ToList() };
+    }
+
+    [McpServerTool]
     [Description(
         "List recent Gitea Actions workflow runs for a repository. " +
         "Filter by branch name or run status (queued/in_progress/success/failure/cancelled/skipped). " +

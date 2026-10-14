@@ -601,6 +601,67 @@ public class GiteaApiClient
 
     // ───────────── Actions ─────────────
 
+    public Task<GiteaWorkflowList> GetWorkflowsAsync(string owner, string repo, CancellationToken ct = default)
+        => GetAsync<GiteaWorkflowList>($"{RepoApiPath(owner, repo)}/actions/workflows", ct);
+
+    public async Task<GiteaWorkflowDispatchResult> DispatchWorkflowAsync(
+        string owner, string repo, string workflowId, string reference,
+        IReadOnlyDictionary<string, string>? inputs, CancellationToken ct = default)
+    {
+        _writePolicy.RequireWriteAccess(owner, repo);
+        GiteaWritePolicy.ValidateFilePath(workflowId);
+        if (workflowId.Length > 200 || workflowId.Contains('/'))
+            throw new ArgumentException("workflowId must be a filename/ID returned by list_workflows, without directories.", nameof(workflowId));
+        GiteaWritePolicy.ValidateRefName(reference);
+        if (inputs is not null)
+        {
+            if (inputs.Count > 50) throw new ArgumentException("At most 50 workflow inputs are allowed.", nameof(inputs));
+            var bytes = 0;
+            foreach (var (key, value) in inputs)
+            {
+                if (string.IsNullOrWhiteSpace(key) || key.Length > 100 || value is null)
+                    throw new ArgumentException("Workflow inputs require nonempty keys (at most 100 characters) and string values.", nameof(inputs));
+                bytes += _writePolicy.GetUtf8ByteCount(key, nameof(inputs)) + _writePolicy.GetUtf8ByteCount(value, nameof(inputs));
+                if (bytes > _opts.MaxWriteRequestBytes)
+                    throw new ArgumentException("Workflow input content exceeds Gitea:MaxWriteRequestBytes.", nameof(inputs));
+            }
+        }
+        var url = $"{RepoApiPath(owner, repo)}/actions/workflows/{Uri.EscapeDataString(workflowId)}/dispatches?return_run_details=true";
+        try
+        {
+            using var response = await _writeHttp.PostAsJsonAsync(url,
+                new { @ref = reference, inputs = inputs ?? new Dictionary<string, string>() }, JsonOpts, ct);
+            if (response.StatusCode == HttpStatusCode.BadRequest)
+                throw new ArgumentException("Gitea rejected the workflow dispatch. Check workflow_dispatch support, the ref and required inputs.");
+            EnsureWriteSuccess(response, url, "dispatch workflow");
+            if (response.StatusCode == HttpStatusCode.NoContent) return new GiteaWorkflowDispatchResult();
+            return await response.Content.ReadFromJsonAsync<GiteaWorkflowDispatchResult>(JsonOpts, ct)
+                ?? new GiteaWorkflowDispatchResult();
+        }
+        catch (Exception ex) when (IsTransientWriteFailure(ex, ct) || ex is JsonException ||
+                                   ex is OperationCanceledException && ct.IsCancellationRequested)
+        {
+            throw new GiteaWriteOutcomeUnknownException("Workflow dispatch outcome is unknown. Check list_workflow_runs before retrying; the dispatch request was not replayed.");
+        }
+    }
+
+    public async Task<GiteaWorkflowRun> RerunWorkflowAsync(
+        string owner, string repo, long runId, CancellationToken ct = default)
+    {
+        _writePolicy.RequireWriteAccess(owner, repo);
+        if (runId <= 0) throw new ArgumentException("runId must be positive.", nameof(runId));
+        try
+        {
+            return await PostWriteAsync<GiteaWorkflowRun>(
+                $"{RepoApiPath(owner, repo)}/actions/runs/{runId}/rerun", new { }, "rerun workflow", ct);
+        }
+        catch (Exception ex) when (IsTransientWriteFailure(ex, ct) || ex is JsonException ||
+                                   ex is OperationCanceledException && ct.IsCancellationRequested)
+        {
+            throw new GiteaWriteOutcomeUnknownException("Workflow rerun outcome is unknown. Check list_workflow_runs/read_run_log before retrying; the rerun request was not replayed.");
+        }
+    }
+
     public async Task<GiteaWorkflowRunList> GetWorkflowRunsAsync(
         string owner, string repo, string? branch, string? status, int limit, CancellationToken ct = default)
     {
@@ -1032,6 +1093,8 @@ public class GiteaApiClient
 
         throw response.StatusCode switch
         {
+            HttpStatusCode.BadRequest
+                => new ArgumentException($"Gitea rejected {operation}. Check the workflow/ref/inputs or operation parameters."),
             HttpStatusCode.Unauthorized
                 => new UnauthorizedAccessException("Gitea write token is invalid or expired."),
             HttpStatusCode.Forbidden
@@ -1045,6 +1108,8 @@ public class GiteaApiClient
                     "update branch reference" => "Branch HEAD conflict: Gitea's old_commit_id check failed, so the target branch was not updated. Re-read the working branch and rebuild the changes.",
                     "create pull request" => "A pull request for this head/base may already exist, or the PR request is invalid. Check list_pulls/read_pull before retrying.",
                     "merge pull request" => "Gitea rejected the merge: PR head changed, conflicts exist, or repository merge requirements are not satisfied. Read the PR and checks again.",
+                    "dispatch workflow" => "Gitea rejected the dispatch. Check workflow_dispatch support, ref and required inputs.",
+                    "rerun workflow" => "Gitea rejected the rerun. Check whether the run exists, is still active, or can be rerun.",
                     _ => $"Gitea rejected the {operation} because a file SHA changed, the branch already exists, or the request is invalid. Re-read current refs and file SHAs before retrying.",
                 }),
             (HttpStatusCode)423

@@ -373,6 +373,95 @@ public sealed class GiteaWriteToolsTests
         Assert.Single(env.Handler.Mutations);
     }
 
+    [Fact]
+    public async Task DispatchWorkflow_PreservesInputsAndRefAndUsesWritePat()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        var result = await env.Tools.dispatch_workflow("dev", "room-organizer", "ci.yml", "refs/heads/main",
+            new Dictionary<string, string> { ["environment"] = "test", ["deploy"] = "false" });
+        var request = Assert.Single(env.Handler.Mutations);
+        Assert.Equal("token write-test-token", request.Authorization);
+        Assert.Equal("?return_run_details=true", env.Handler.DispatchQuery);
+        using var body = JsonDocument.Parse(request.Body!);
+        Assert.Equal("refs/heads/main", body.RootElement.GetProperty("ref").GetString());
+        Assert.Equal("false", body.RootElement.GetProperty("inputs").GetProperty("deploy").GetString());
+        using var returned = JsonDocument.Parse(JsonSerializer.Serialize(result));
+        Assert.Equal(87, returned.RootElement.GetProperty("run_id").GetInt64());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CiWrites_RequireWriteScope(bool rerun)
+    {
+        var env = CreateEnvironment("read:gitea");
+        await Assert.ThrowsAsync<McpException>(() => rerun
+            ? env.Tools.rerun_workflow_run("dev", "room-organizer", 87)
+            : env.Tools.dispatch_workflow("dev", "room-organizer", "ci.yml", "main"));
+        Assert.Empty(env.Handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CiWrites_LostResponseIsNotReplayed(bool rerun)
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        env.Handler.LoseCiResponse = true;
+        var error = await Assert.ThrowsAsync<McpException>(() => rerun
+            ? env.Tools.rerun_workflow_run("dev", "room-organizer", 87)
+            : env.Tools.dispatch_workflow("dev", "room-organizer", "ci.yml", "main"));
+        Assert.Contains("outcome is unknown", error.Message);
+        Assert.Single(env.Handler.Mutations);
+    }
+
+    [Fact]
+    public async Task DispatchWorkflow_Empty204ResponseIsAcceptedWithoutInventingRunId()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        env.Handler.DispatchNoContent = true;
+        var result = await env.Tools.dispatch_workflow("dev", "room-organizer", "ci.yml", "main");
+        using var returned = JsonDocument.Parse(JsonSerializer.Serialize(result));
+        Assert.True(returned.RootElement.GetProperty("accepted").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, returned.RootElement.GetProperty("run_id").ValueKind);
+    }
+
+    [Fact]
+    public async Task DispatchWorkflow_ForbiddenDoesNotFallbackToReadPat()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea", rejectWrites: true);
+        await Assert.ThrowsAsync<McpException>(() => env.Tools.dispatch_workflow("dev", "room-organizer", "ci.yml", "main"));
+        Assert.Equal("token write-test-token", Assert.Single(env.Handler.Requests).Authorization);
+    }
+
+    [Fact]
+    public async Task RerunWorkflow_ReturnsUpstreamRunAndUsesWritePat()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        var result = await env.Tools.rerun_workflow_run("dev", "room-organizer", 87);
+        Assert.Equal(RepoUrl + "/actions/runs/87/rerun", Assert.Single(env.Handler.Mutations).Path);
+        using var returned = JsonDocument.Parse(JsonSerializer.Serialize(result));
+        Assert.Equal(88, returned.RootElement.GetProperty("run_id").GetInt64());
+    }
+
+    [Fact]
+    public async Task ListWorkflows_UsesReadPatAndStringWorkflowIds()
+    {
+        var env = CreateEnvironment("read:gitea");
+        var result = await env.Api.GetWorkflowsAsync("dev", "room-organizer");
+        Assert.Equal("ci.yml", Assert.Single(result.Workflows).Id);
+        Assert.Equal("token read-test-token", Assert.Single(env.Handler.Requests).Authorization);
+    }
+
+    [Fact]
+    public async Task InvalidCiIdentifiers_AreRejectedBeforeHttp()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        await Assert.ThrowsAsync<McpException>(() => env.Tools.dispatch_workflow("dev", "room-organizer", "../ci.yml", "main"));
+        await Assert.ThrowsAsync<McpException>(() => env.Tools.rerun_workflow_run("dev", "room-organizer", 0));
+        Assert.Empty(env.Handler.Requests);
+    }
+
     private static TestEnvironment CreateEnvironment(
         string scopes,
         bool protectedBranch = false,
@@ -444,6 +533,9 @@ public sealed class GiteaWriteToolsTests
         public bool LoseMergeResponse { get; set; }
         public bool MergeRejected { get; set; }
         private bool _merged;
+        public bool LoseCiResponse { get; set; }
+        public bool DispatchNoContent { get; set; }
+        public string? DispatchQuery { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -453,6 +545,22 @@ public sealed class GiteaWriteToolsTests
             var captured = new CapturedRequest(method, path, body, request.Headers.Authorization?.ToString());
             Requests.Add(captured);
             if (method != "GET") Mutations.Add(captured);
+
+            if (method == "GET" && path == RepoUrl + "/actions/workflows")
+                return Json(HttpStatusCode.OK, """{"total_count":1,"workflows":[{"id":"ci.yml","name":"CI","state":"active"}]}""");
+            if (method == "POST" && path == RepoUrl + "/actions/workflows/ci.yml/dispatches")
+            {
+                DispatchQuery = request.RequestUri.Query;
+                if (rejectWrites) return Json(HttpStatusCode.Forbidden, "{}");
+                if (LoseCiResponse) throw new HttpRequestException("simulated lost dispatch response");
+                if (DispatchNoContent) return new HttpResponseMessage(HttpStatusCode.NoContent);
+                return Json(HttpStatusCode.OK, """{"workflow_run_id":87,"html_url":"https://gitea.test/actions/runs/87"}""");
+            }
+            if (method == "POST" && path == RepoUrl + "/actions/runs/87/rerun")
+            {
+                if (LoseCiResponse) throw new HttpRequestException("simulated lost rerun response");
+                return Json(HttpStatusCode.Created, """{"id":88,"status":"queued","html_url":"https://gitea.test/actions/runs/88"}""");
+            }
 
             if (method == "GET" && path == RepoUrl + "/pulls/42")
                 return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new
