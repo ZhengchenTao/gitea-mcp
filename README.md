@@ -61,7 +61,9 @@ All tools need `scope=read:gitea`. Write tools additionally require `scope=write
 | `create_pull_request` | Open a PR from a working branch to a target branch |
 | `get_diff` | Read one commit diff or compare two refs |
 
-The `/mcp` endpoint keeps the existing `read:gitea` gate. A write call also checks `write:gitea`, an exact server-side repository allowlist, a separate write PAT, and branch protection. The allowlist is empty by default. Direct commits to the repository default branch, `main`, `master`, or a Gitea-protected branch are rejected. File paths are relative and traversal segments are rejected. The server defaults to at most 20 files, 256 KiB per file, 1 MiB total file content, and an 8 MiB HTTP request body.
+The `/mcp` endpoint keeps the existing `read:gitea` gate. A write call also checks `write:gitea`, an exact server-side repository allowlist and a separate write PAT. The allowlist is empty by default. Direct commits to `main`, `master` and the repository default branch are supported, with file SHA and branch HEAD checks. Gitea enforces the token's push permissions and native branch protection. `Gitea__WriteProtectedBranches` can additionally block specific branches and defaults to empty. File paths are relative and traversal segments are rejected. The server defaults to at most 20 files, 256 KiB per file, 1 MiB total file content, and an 8 MiB HTTP request body.
+
+`merge_pull_request` merges a reviewed PR using a mandatory `expectedHeadSha` from `read_pull.head_sha`. Supported styles are `merge`, `squash`, `rebase`, `rebase-merge` and `fast-forward-only`. Existing CI must succeed; repositories without CI can merge. Gitea atomically checks `head_commit_id` and enforces required reviews and repository rules. The tool never force-merges or deletes the source branch, and never replays a merge after a timeout. Read the PR to resolve an unknown outcome. To commit directly to main, use `commit_files` with `branch=main` and its current `expectedHeadSha`.
 
 Write errors are returned as actionable MCP tool errors: missing scope/PAT, disallowed repo/branch, stale file SHA, stale branch HEAD, and uncertain timeout outcomes have separate messages. For an uncertain outcome, inspect the branch/diff or PR before retrying.
 
@@ -101,7 +103,7 @@ Environment variables, `__` for nesting.
 | `Gitea__WritePat` | – | Separate least-privilege write token. Optional; blank disables writes. |
 | `Gitea__RepoBlacklist` | – | Comma-separated `owner/repo` to hide |
 | `Gitea__WriteRepoAllowlist` | empty | Exact comma-separated `owner/repo` entries allowed to write; empty denies all writes |
-| `Gitea__WriteProtectedBranches` | `main,master` | Extra branch names that cannot receive direct commits |
+| `Gitea__WriteProtectedBranches` | Empty | Extra branch names that cannot receive direct commits; native Gitea protection still applies |
 | `Gitea__DefaultLimit` | `50` | Default page size for list tools |
 | `Gitea__MaxFileBytes` | `1048576` | Largest file or log read, in bytes |
 | `Gitea__MaxWriteFiles` | `20` | Maximum operations in one `commit_files` call |

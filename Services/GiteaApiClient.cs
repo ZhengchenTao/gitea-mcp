@@ -422,6 +422,68 @@ public class GiteaApiClient
         }
     }
 
+    public async Task<GiteaPullRequest> MergePullRequestAsync(
+        string owner, string repo, int number, string expectedHeadSha, string mergeStyle,
+        CancellationToken ct = default)
+    {
+        _writePolicy.RequireWriteAccess(owner, repo);
+        if (number <= 0) throw new ArgumentException("PR number must be positive.", nameof(number));
+        if (!IsBlobSha(expectedHeadSha))
+            throw new ArgumentException("expectedHeadSha must be a 40- or 64-character PR head SHA.", nameof(expectedHeadSha));
+        if (mergeStyle is not ("merge" or "squash" or "rebase" or "rebase-merge" or "fast-forward-only"))
+            throw new ArgumentException("mergeStyle must be merge, squash, rebase, rebase-merge, or fast-forward-only.", nameof(mergeStyle));
+
+        var pull = await GetPullAsync(owner, repo, number, ct);
+        if (!string.Equals(pull.Head?.Sha, expectedHeadSha, StringComparison.OrdinalIgnoreCase))
+            throw new GiteaWriteConflictException("PR head changed. Read the PR and review its new diff before merging.");
+        if (pull.Merged) return pull;
+        if (pull.State != "open") throw new GiteaWriteConflictException("The PR is closed and has not been merged.");
+
+        var status = await GetAsync<JsonElement>(
+            $"{RepoApiPath(owner, repo)}/commits/{expectedHeadSha}/status", ct);
+        if (status.TryGetProperty("total_count", out var count) && count.GetInt32() > 0 &&
+            status.TryGetProperty("state", out var state) && state.GetString() != "success")
+            throw new GiteaWriteConflictException($"PR CI checks are {state.GetString()}; wait for successful checks before merging.");
+
+        var url = $"{RepoApiPath(owner, repo)}/pulls/{number}/merge";
+        try
+        {
+            using var response = await _writeHttp.PostAsJsonAsync(url, new
+            {
+                @do = mergeStyle,
+                head_commit_id = expectedHeadSha,
+                force_merge = false,
+                delete_branch_after_merge = false,
+                merge_when_checks_succeed = false,
+            }, JsonOpts, ct);
+            if (response.StatusCode == HttpStatusCode.MethodNotAllowed)
+                throw new GiteaWriteConflictException("Gitea rejected the merge: check conflicts, required reviews, CI and repository merge settings.");
+            EnsureWriteSuccess(response, url, "merge pull request");
+        }
+        catch (Exception ex) when (IsTransientWriteFailure(ex, ct))
+        {
+            try
+            {
+                var observed = await GetPullAsync(owner, repo, number, ct);
+                if (observed.Merged) return observed;
+            }
+            catch (Exception) { /* Preserve the unknown outcome; never replay a merge. */ }
+            throw new GiteaWriteOutcomeUnknownException("PR merge outcome is unknown. Read the PR before retrying; the merge request was not replayed.");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw new GiteaWriteOutcomeUnknownException("PR merge was cancelled after the request started. Read the PR before retrying.");
+        }
+
+        try
+        {
+            pull = await GetPullAsync(owner, repo, number, ct);
+            if (pull.Merged) return pull;
+        }
+        catch (Exception) { /* A successful POST must not be replayed if verification fails. */ }
+        throw new GiteaWriteOutcomeUnknownException("Gitea accepted the merge but its final state could not be verified. Read the PR before retrying.");
+    }
+
     /// <summary>Get a branch diff as plain unified diff text.</summary>
     public async Task<string> GetCompareDiffAsync(
         string owner, string repo, string baseBranch, string headBranch,
@@ -674,11 +736,6 @@ public class GiteaApiClient
         string owner, string repo, string branchName, CancellationToken ct)
     {
         _writePolicy.ValidateWritableBranchName(branchName);
-        var repository = await GetRepoAsync(owner, repo, ct);
-        if (string.Equals(repository.DefaultBranch, branchName, StringComparison.OrdinalIgnoreCase))
-            throw new UnauthorizedAccessException(
-                $"Direct commits to repository default branch '{branchName}' are disabled. Create a working branch and open a pull request.");
-
         GiteaBranch branch;
         try
         {
@@ -689,10 +746,6 @@ public class GiteaApiClient
         {
             throw new KeyNotFoundException($"Branch '{branchName}' does not exist in {owner}/{repo}.");
         }
-
-        if (branch.Protected)
-            throw new UnauthorizedAccessException(
-                $"Direct commits to Gitea-protected branch '{branchName}' are disabled. Create a working branch and open a pull request.");
 
         return branch;
     }
@@ -991,6 +1044,7 @@ public class GiteaApiClient
                     "create branch" => "The branch already exists or the source ref is invalid. Check both values and retry with a new branch name.",
                     "update branch reference" => "Branch HEAD conflict: Gitea's old_commit_id check failed, so the target branch was not updated. Re-read the working branch and rebuild the changes.",
                     "create pull request" => "A pull request for this head/base may already exist, or the PR request is invalid. Check list_pulls/read_pull before retrying.",
+                    "merge pull request" => "Gitea rejected the merge: PR head changed, conflicts exist, or repository merge requirements are not satisfied. Read the PR and checks again.",
                     _ => $"Gitea rejected the {operation} because a file SHA changed, the branch already exists, or the request is invalid. Re-read current refs and file SHAs before retrying.",
                 }),
             (HttpStatusCode)423

@@ -20,7 +20,7 @@ public sealed class WriteTools(
     [McpServerTool]
     [Description(
         "Create a new branch from a branch, tag, or commit SHA. Requires write:gitea and an exact server-side repository allowlist entry. " +
-        "The repository default branch and main/master cannot be created through this tool. If fromRef is omitted, the repository default branch is used. " +
+        "If fromRef is omitted, the repository default branch is used. Gitea permissions and configured branch restrictions apply. " +
         "If the result is unknown after a timeout, call list_branches before retrying.")]
     public async Task<object> create_branch(
         [Description("Repository owner login, for example dev.")] string owner,
@@ -45,7 +45,7 @@ public sealed class WriteTools(
     [Description(
         "Create a new UTF-8 text file or update one file on a working branch. expectedHeadSha must be the current branch HEAD; expectedSha is also required when updating an existing file. " +
         "Use create_branch/list_branches for expectedHeadSha, list_tree for the file blob SHA, and read_file for content. The server uses Gitea's conditional branch-ref update to reject a stale HEAD. " +
-        "Requires write:gitea, Gitea:WritePat, and an exact repository allowlist entry. Direct commits to default/protected branches are rejected.")]
+        "Requires write:gitea, Gitea:WritePat, and an exact repository allowlist entry. Direct commits to main/default branches are supported, subject to Gitea permissions and configured branch restrictions.")]
     public async Task<object> upsert_file(
         [Description("Repository owner login.")] string owner,
         [Description("Repository name.")] string repo,
@@ -67,7 +67,7 @@ public sealed class WriteTools(
     [McpServerTool]
     [Description(
         "Delete one file from a working branch. expectedSha protects the file version and expectedHeadSha protects the branch HEAD. Both are mandatory. " +
-        "Requires write:gitea and an exact repository allowlist entry; direct commits to default/protected branches are rejected.")]
+        "Requires write:gitea and an exact repository allowlist entry. Direct commits to main/default branches follow Gitea permissions and configured branch restrictions.")]
     public async Task<object> delete_file(
         [Description("Repository owner login.")] string owner,
         [Description("Repository name.")] string repo,
@@ -91,7 +91,7 @@ public sealed class WriteTools(
         "Each changes item has operation=create|update|delete, path, optional content, and expectedSha (required for update/delete). expectedHeadSha is the current working-branch tip. " +
         "The server stages the batch on a unique temporary ref, then conditionally moves the target branch using Gitea's old_commit_id compare-and-swap with force=false. A stale HEAD leaves the target branch unchanged; cleanup failures are reported as cleanup_warning. " +
         "If the branch update outcome is unknown, inspect list_branches/get_diff before retrying; do not resend the batch blindly. " +
-        "Requires write:gitea, an exact repository allowlist entry, and an unprotected working branch.")]
+        "Requires write:gitea and an exact repository allowlist entry. Supports main/default branches; Gitea enforces its own branch protection and push permissions.")]
     public async Task<object> commit_files(
         [Description("Repository owner login.")] string owner,
         [Description("Repository name.")] string repo,
@@ -136,6 +136,24 @@ public sealed class WriteTools(
             };
         });
     }
+
+    [McpServerTool]
+    [Description(
+        "Merge an existing PR after reviewing read_pull/get_diff. Requires write:gitea and an exact repository allowlist entry. " +
+        "expectedHeadSha must match the reviewed PR head. Failed/pending CI is rejected; Gitea enforces required reviews and branch protection. " +
+        "Never force-merges or deletes the source branch. On an unknown outcome, read_pull before retrying.")]
+    public Task<object> merge_pull_request(
+        [Description("Repository owner login.")] string owner,
+        [Description("Repository name.")] string repo,
+        [Description("PR number to merge.")] int number,
+        [Description("Reviewed PR head SHA, obtained from read_pull.head_sha.")] string expectedHeadSha,
+        [Description("merge, squash, rebase, rebase-merge, or fast-forward-only. Defaults to merge.")] string mergeStyle = "merge",
+        CancellationToken ct = default)
+        => ExposeWriteErrorAsync(async () =>
+        {
+            var pull = await gitea.MergePullRequestAsync(owner, repo, number, expectedHeadSha, mergeStyle, ct);
+            return new { number = pull.Number, merged = pull.Merged, merge_commit_sha = pull.MergeCommitSha, html_url = pull.HtmlUrl };
+        });
 
     [McpServerTool]
     [Description(

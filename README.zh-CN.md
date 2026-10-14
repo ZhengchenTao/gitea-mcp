@@ -46,9 +46,12 @@ Gitea REST API
 | `upsert_file`、`delete_file` | 在工作分支新增 / 更新 / 删除单个 UTF-8 文本文件；每次写入都要给 `expectedHeadSha`，更新 / 删除还要给文件 blob `expectedSha` |
 | `commit_files` | 最多 20 个文件的新增、修改和删除；必须给分支 HEAD，修改 / 删除项还要给文件 SHA |
 | `create_pull_request` | 从工作分支向目标分支创建 PR |
+| `merge_pull_request` | 合并已审查的 PR；必须传当前 PR head SHA，支持 merge / squash / rebase 等方式，拒绝失败或未完成的 CI，不强制合并、不删除源分支 |
 | `get_diff` | 读取一个 Commit 的 diff，或比较两个 ref |
 
-`/mcp` 整体仍要求原有 `read:gitea`。写工具另行校验 `write:gitea`、精确仓库白名单、独立写 PAT 和分支保护；白名单默认空，拒绝全部写入。仓库默认分支、`main`、`master` 和 Gitea 标记为受保护的分支都不能直接提交。文件路径必须是仓库内相对路径，拒绝路径穿越。默认限制为单次最多 20 个文件、单文件 256 KiB、文件内容合计 1 MiB、HTTP 请求体 8 MiB。
+`/mcp` 整体仍要求原有 `read:gitea`。写工具另行校验 `write:gitea`、精确仓库白名单和独立写 PAT；白名单默认空，拒绝全部写入。`commit_files` / `upsert_file` / `delete_file` 支持直接提交 `main`、`master` 或默认分支，保留文件 SHA 与分支 HEAD 校验；能否推送由 Gitea 的账号权限与原生分支保护规则决定。`Gitea__WriteProtectedBranches` 可额外禁止指定分支，默认空。文件路径必须是仓库内相对路径，拒绝路径穿越。默认限制为单次最多 20 个文件、单文件 256 KiB、文件内容合计 1 MiB、HTTP 请求体 8 MiB。
+
+合并流程：`read_pull` → 审查 `get_diff` → 将 `head_sha` 传给 `merge_pull_request.expectedHeadSha`。服务先检查当前 head 和已有 CI 状态，再把 `head_commit_id` 交给 Gitea 原子校验；上游要求的审查和检查仍须满足。无 CI 的仓库可以合并，已有 CI 必须成功。超时后先读 PR，不自动重放合并请求。也可直接给 `commit_files.branch=main` 提交，仍需最新 `expectedHeadSha`。
 
 写入错误会以可操作的 MCP tool error 返回，区分 scope / PAT 不足、仓库或分支不在白名单、文件 SHA 冲突、分支 HEAD 冲突和超时结果未知。结果未知时先检查分支 / Diff 或 PR，不要盲目重放。
 
@@ -75,7 +78,7 @@ Gitea REST API
 | `Gitea__WritePat` | – | 独立的最小权限写令牌，可选；留空即关闭写入 |
 | `Gitea__RepoBlacklist` | – | 要隐藏的 `owner/repo`，逗号分隔 |
 | `Gitea__WriteRepoAllowlist` | 空 | 允许写入的精确 `owner/repo` 清单，逗号分隔；默认空即全部拒绝 |
-| `Gitea__WriteProtectedBranches` | `main,master` | 额外禁止直接提交的分支名 |
+| `Gitea__WriteProtectedBranches` | 空 | 额外禁止直接提交的分支名；Gitea 自身保护仍然生效 |
 | `Gitea__DefaultLimit` | `50` | 列表类工具的默认条数 |
 | `Gitea__MaxFileBytes` | `1048576` | 单个文件或日志最多读多少字节 |
 | `Gitea__MaxWriteFiles` | `20` | 一次 `commit_files` 最多文件操作数 |

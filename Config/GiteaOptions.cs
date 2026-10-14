@@ -33,8 +33,8 @@ public class GiteaOptions
     /// <summary>允许写入的精确 owner/repo 清单，逗号分隔。默认空即拒绝所有写入。</summary>
     public string WriteRepoAllowlist { get; set; } = string.Empty;
 
-    /// <summary>即使 Gitea 未配置保护，也禁止直接提交的分支名；main/master 始终禁止。</summary>
-    public string WriteProtectedBranches { get; set; } = "main,master";
+    /// <summary>额外禁止直接提交的分支名。默认空，允许 main/默认分支；Gitea 自身保护规则仍然生效。</summary>
+    public string WriteProtectedBranches { get; set; } = string.Empty;
 
     /// <summary>list_repos 的默认 limit（不传时使用）</summary>
     public int DefaultLimit { get; set; } = 50;

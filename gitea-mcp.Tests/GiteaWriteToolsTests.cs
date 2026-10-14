@@ -94,21 +94,21 @@ public sealed class GiteaWriteToolsTests
     }
 
     [Fact]
-    public async Task DefaultBranch_IsRejectedForDirectCommit()
+    public async Task DefaultBranch_AllowsDirectCommitWithHeadCompareAndSwap()
     {
         var env = CreateEnvironment("read:gitea write:gitea");
 
-        await Assert.ThrowsAsync<McpException>(() =>
-            env.Tools.commit_files("dev", "room-organizer", "main", InitialHeadSha, "unsafe", new[]
+        await env.Tools.commit_files("dev", "room-organizer", "main", InitialHeadSha, "direct main", new[]
             {
                 new GiteaWriteFileChange { Operation = "create", Path = "new.txt", Content = "x" },
-            }));
+            });
 
-        Assert.Empty(env.Handler.Mutations);
+        Assert.Equal(StagedCommitSha, env.Handler.TargetHeadSha);
+        Assert.Contains(env.Handler.Mutations, x => x.Method == "PUT" && x.Path == RepoUrl + "/branches/main");
     }
 
     [Fact]
-    public async Task GiteaProtectedNonDefaultBranch_IsRejectedForDirectCommit()
+    public async Task GiteaProtectedBranch_UpstreamRejectionIsPreservedAndStagingIsCleaned()
     {
         var env = CreateEnvironment("read:gitea write:gitea", protectedBranch: true);
 
@@ -118,7 +118,9 @@ public sealed class GiteaWriteToolsTests
                 new GiteaWriteFileChange { Operation = "create", Path = "new.txt", Content = "x" },
             }));
 
-        Assert.Empty(env.Handler.Mutations);
+        Assert.Contains(env.Handler.Mutations, x => x.Method == "PUT");
+        Assert.Equal(InitialHeadSha, env.Handler.TargetHeadSha);
+        Assert.Null(env.Handler.StagingBranch);
     }
 
     [Fact]
@@ -310,6 +312,69 @@ public sealed class GiteaWriteToolsTests
         Assert.Empty(env.Handler.Mutations);
     }
 
+    [Fact]
+    public async Task MergePullRequest_UsesReviewedHeadAndNeverForcesOrDeletes()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        await env.Tools.merge_pull_request("dev", "room-organizer", 42, InitialHeadSha, "squash");
+        var request = Assert.Single(env.Handler.Mutations);
+        Assert.Equal("write-test-token", request.Authorization!.Split(' ')[1]);
+        using var body = JsonDocument.Parse(request.Body!);
+        Assert.Equal("squash", body.RootElement.GetProperty("do").GetString());
+        Assert.Equal(InitialHeadSha, body.RootElement.GetProperty("head_commit_id").GetString());
+        Assert.False(body.RootElement.GetProperty("force_merge").GetBoolean());
+        Assert.False(body.RootElement.GetProperty("delete_branch_after_merge").GetBoolean());
+    }
+
+    [Fact]
+    public async Task MergePullRequest_StaleHeadIsRejectedBeforeMutation()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        await Assert.ThrowsAsync<McpException>(() => env.Tools.merge_pull_request("dev", "room-organizer", 42, ConcurrentHeadSha));
+        Assert.Empty(env.Handler.Mutations);
+    }
+
+    [Theory]
+    [InlineData("failure")]
+    [InlineData("pending")]
+    [InlineData("error")]
+    public async Task MergePullRequest_UnsuccessfulCiIsRejected(string state)
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        env.Handler.CommitStatusState = state;
+        await Assert.ThrowsAsync<McpException>(() => env.Tools.merge_pull_request("dev", "room-organizer", 42, InitialHeadSha));
+        Assert.Empty(env.Handler.Mutations);
+    }
+
+    [Theory]
+    [InlineData("read:gitea", "dev/room-organizer")]
+    [InlineData("read:gitea write:gitea", "dev/another-repo")]
+    public async Task MergePullRequest_RequiresScopeAndRepositoryAllowlist(string scope, string allowlist)
+    {
+        var env = CreateEnvironment(scope, writeAllowlist: allowlist);
+        await Assert.ThrowsAsync<McpException>(() => env.Tools.merge_pull_request("dev", "room-organizer", 42, InitialHeadSha));
+        Assert.Empty(env.Handler.Requests);
+    }
+
+    [Fact]
+    public async Task MergePullRequest_LostResponseRecoversWithoutReplayingMerge()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        env.Handler.LoseMergeResponse = true;
+        await env.Tools.merge_pull_request("dev", "room-organizer", 42, InitialHeadSha);
+        Assert.Single(env.Handler.Mutations);
+    }
+
+    [Fact]
+    public async Task MergePullRequest_RepositoryProtectionRejectionIsNotBypassed()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        env.Handler.MergeRejected = true;
+        var error = await Assert.ThrowsAsync<McpException>(() => env.Tools.merge_pull_request("dev", "room-organizer", 42, InitialHeadSha));
+        Assert.Contains("Gitea rejected", error.Message);
+        Assert.Single(env.Handler.Mutations);
+    }
+
     private static TestEnvironment CreateEnvironment(
         string scopes,
         string writeAllowlist = "dev/room-organizer",
@@ -379,6 +444,10 @@ public sealed class GiteaWriteToolsTests
         private string? _targetBranchName;
         public string? StagingBranch { get; private set; }
         private int _casAttempts;
+        public string CommitStatusState { get; set; } = "success";
+        public bool LoseMergeResponse { get; set; }
+        public bool MergeRejected { get; set; }
+        private bool _merged;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -388,6 +457,22 @@ public sealed class GiteaWriteToolsTests
             var captured = new CapturedRequest(method, path, body, request.Headers.Authorization?.ToString());
             Requests.Add(captured);
             if (method != "GET") Mutations.Add(captured);
+
+            if (method == "GET" && path == RepoUrl + "/pulls/42")
+                return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new
+                {
+                    number = 42, state = _merged ? "closed" : "open", merged = _merged,
+                    head = new { sha = InitialHeadSha }, merge_commit_sha = _merged ? StagedCommitSha : null,
+                }));
+            if (method == "GET" && path.EndsWith("/status", StringComparison.Ordinal))
+                return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { state = CommitStatusState, total_count = 1 }));
+            if (method == "POST" && path == RepoUrl + "/pulls/42/merge")
+            {
+                if (MergeRejected) return Json(HttpStatusCode.MethodNotAllowed, "{}");
+                _merged = true;
+                if (LoseMergeResponse) throw new HttpRequestException("simulated lost merge response");
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
 
             if (method == "GET" && path == RepoUrl)
                 return Json(HttpStatusCode.OK, """{"default_branch":"main","html_url":"https://gitea.test/dev/room-organizer"}""");
@@ -485,6 +570,8 @@ public sealed class GiteaWriteToolsTests
             if (method == "PUT" && path.StartsWith(RepoUrl + "/branches/", StringComparison.Ordinal))
             {
                 _casAttempts++;
+                if (protectedBranch && path.EndsWith("release%2Fsecure", StringComparison.OrdinalIgnoreCase))
+                    return Json(HttpStatusCode.Forbidden, "{}");
                 if (rejectWrites) return Json(HttpStatusCode.Forbidden, "{}");
                 if (moveHeadBeforeCas)
                 {

@@ -33,8 +33,6 @@ public sealed class GiteaWritePolicy
         _repoFilter = repoFilter;
         _writeAllowlist = ParseSet(_options.WriteRepoAllowlist);
         _protectedBranches = ParseSet(_options.WriteProtectedBranches);
-        _protectedBranches.Add("main");
-        _protectedBranches.Add("master");
     }
 
     public void RequireWriteAccess(string owner, string repo)
@@ -73,7 +71,7 @@ public sealed class GiteaWritePolicy
         ValidateBranchName(branch);
         if (IsProtectedBranchName(branch))
             throw new UnauthorizedAccessException(
-                $"Direct commits to protected branch '{branch}' are disabled. Create a working branch and open a pull request.");
+                $"Direct commits to branch '{branch}' are disabled by Gitea:WriteProtectedBranches.");
     }
 
     public bool IsProtectedBranchName(string branch) =>

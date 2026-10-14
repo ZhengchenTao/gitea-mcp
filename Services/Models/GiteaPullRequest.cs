@@ -31,6 +31,9 @@ public class GiteaPullRequest
     [JsonPropertyName("merged")]
     public bool Merged { get; set; }
 
+    [JsonPropertyName("merge_commit_sha")]
+    public string? MergeCommitSha { get; set; }
+
     [JsonPropertyName("mergeable")]
     public bool? Mergeable { get; set; }
 
