@@ -26,7 +26,7 @@ public static class DiscoveryEndpoints
                 response_types_supported = new[] { "code" },
                 grant_types_supported = new[] { "authorization_code", "refresh_token" },
                 code_challenge_methods_supported = new[] { "S256" },
-                scopes_supported = new[] { "read:gitea" },
+                scopes_supported = new[] { "read:gitea", "write:gitea" },
             });
         });
 
@@ -40,7 +40,7 @@ public static class DiscoveryEndpoints
             {
                 resource = resourceUrl,
                 authorization_servers = new[] { o.Issuer },
-                scopes_supported = new[] { "read:gitea" },
+                scopes_supported = new[] { "read:gitea", "write:gitea" },
                 bearer_methods_supported = new[] { "header" },
             });
         });

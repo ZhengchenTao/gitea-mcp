@@ -60,8 +60,17 @@ public class GiteaCommitFull
     [JsonPropertyName("files")]
     public List<GiteaCommitFile>? Files { get; set; }
 
+    [JsonPropertyName("parents")]
+    public List<GiteaCommitParent>? Parents { get; set; }
+
     [JsonPropertyName("stats")]
     public GiteaCommitStats? Stats { get; set; }
+}
+
+public class GiteaCommitParent
+{
+    [JsonPropertyName("sha")]
+    public string Sha { get; set; } = string.Empty;
 }
 
 public class GiteaCommitFile

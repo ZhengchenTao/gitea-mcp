@@ -9,6 +9,7 @@ namespace GiteaMcp.Auth;
 public static class ScopePolicies
 {
     public const string ReadGitea = "read:gitea";
+    public const string WriteGitea = "write:gitea";
 
     public static IServiceCollection AddScopePolicies(this IServiceCollection services)
     {
@@ -17,6 +18,11 @@ public static class ScopePolicies
             {
                 policy.RequireAuthenticatedUser();
                 policy.AddRequirements(new ScopeRequirement(ReadGitea));
+            })
+            .AddPolicy(WriteGitea, policy =>
+            {
+                policy.RequireAuthenticatedUser();
+                policy.AddRequirements(new ScopeRequirement(WriteGitea));
             });
 
         services.AddSingleton<IAuthorizationHandler, ScopeRequirementHandler>();

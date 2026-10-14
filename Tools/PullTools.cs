@@ -1,4 +1,5 @@
 using GiteaMcp.Services;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 
@@ -104,6 +105,20 @@ public class PullTools(
                 notice = $"Gitea returned 404 for pull #{number} on {owner}/{repo}. " +
                          "The PR may not exist, or the pull-requests unit is disabled (common for mirror repos).",
             };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (McpException)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            // GiteaApiClient errors contain only a sanitized status/URL, never response bodies.
+            // Mark them actionable so the MCP SDK does not replace them with a generic tool error.
+            throw new McpException(error.Message, error);
         }
 
         return new

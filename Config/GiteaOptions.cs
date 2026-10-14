@@ -19,14 +19,38 @@ public class GiteaOptions
     public string AdminPat { get; set; } = string.Empty;
 
     /// <summary>
+    /// 独立的 Gitea 写入 PAT。留空时全部写入工具关闭；应使用仅对写入白名单仓库有写权限的非管理员账号。
+    /// 环境变量：Gitea__WritePat。
+    /// </summary>
+    public string WritePat { get; set; } = string.Empty;
+
+    /// <summary>
     /// 黑名单：逗号分隔的 owner/repo，格式如 "alice/secret-repo,acme/internal"。
     /// 黑名单内的 repo 不会出现在任何 Tool 的返回值里。默认空（全开放）。
     /// </summary>
     public string RepoBlacklist { get; set; } = string.Empty;
+
+    /// <summary>允许写入的精确 owner/repo 清单，逗号分隔。默认空即拒绝所有写入。</summary>
+    public string WriteRepoAllowlist { get; set; } = string.Empty;
+
+    /// <summary>即使 Gitea 未配置保护，也禁止直接提交的分支名；main/master 始终禁止。</summary>
+    public string WriteProtectedBranches { get; set; } = "main,master";
 
     /// <summary>list_repos 的默认 limit（不传时使用）</summary>
     public int DefaultLimit { get; set; } = 50;
 
     /// <summary>read_file 的默认最大字节数（1MB）</summary>
     public int MaxFileBytes { get; set; } = 1 * 1024 * 1024;
+
+    /// <summary>一次写入允许的最大文件数。</summary>
+    public int MaxWriteFiles { get; set; } = 20;
+
+    /// <summary>单个写入文件的最大 UTF-8 字节数。</summary>
+    public int MaxWriteFileBytes { get; set; } = 256 * 1024;
+
+    /// <summary>一次多文件提交的最大 UTF-8 文件内容总字节数。</summary>
+    public int MaxWriteRequestBytes { get; set; } = 1 * 1024 * 1024;
+
+    /// <summary>MCP HTTP 请求体上限；工具仍另行限制文件内容总量和单文件大小。</summary>
+    public long MaxMcpRequestBodyBytes { get; set; } = 8 * 1024 * 1024;
 }

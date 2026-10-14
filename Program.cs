@@ -8,6 +8,12 @@ using System.Net.Http.Headers;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var maxMcpRequestBodyBytes = builder.Configuration.GetValue<long>("Gitea:MaxMcpRequestBodyBytes", 8 * 1024 * 1024);
+if (maxMcpRequestBodyBytes < 1024)
+    throw new InvalidOperationException("Gitea:MaxMcpRequestBodyBytes must be at least 1024 bytes.");
+builder.WebHost.ConfigureKestrel(options =>
+    options.Limits.MaxRequestBodySize = maxMcpRequestBodyBytes);
+
 // ─── 配置绑定 ───────────────────────────────────────────────
 builder.Services.Configure<GiteaOptions>(
     builder.Configuration.GetSection(GiteaOptions.SectionName));
@@ -42,6 +48,7 @@ builder.Services.AddHttpClient("gitea", client =>
 
     client.DefaultRequestHeaders.Accept.Add(
         new MediaTypeWithQualityHeaderValue("application/json"));
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("gitea-mcp/1.0");
 
     // 单请求超时 30s
     client.Timeout = TimeSpan.FromSeconds(30);
@@ -60,8 +67,22 @@ builder.Services.AddHttpClient("gitea", client =>
     options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60);
 });
 
+// 写请求单独使用专用 PAT，且不启用自动重试：上游已提交但响应丢失时自动重试可能重复创建提交或 PR。
+builder.Services.AddHttpClient("gitea-write", client =>
+{
+    var url = giteaBaseUrl.TrimEnd('/') + "/";
+    client.BaseAddress = new Uri(url);
+    client.DefaultRequestHeaders.Authorization =
+        new AuthenticationHeaderValue("token", builder.Configuration["Gitea:WritePat"] ?? string.Empty);
+    client.DefaultRequestHeaders.Accept.Add(
+        new MediaTypeWithQualityHeaderValue("application/json"));
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("gitea-mcp/1.0");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
 // ─── 业务服务 ──────────────────────────────────────────────
 builder.Services.AddSingleton<GiteaRepoFilter>();
+builder.Services.AddScoped<GiteaWritePolicy>();
 builder.Services.AddScoped<GiteaApiClient>();
 
 // ─── MCP Server ────────────────────────────────────────────

@@ -3,20 +3,24 @@ using GiteaMcp.Services.Models;
 using Microsoft.Extensions.Options;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 
 namespace GiteaMcp.Services;
 
 /// <summary>
 /// Gitea REST API 封装。
-/// 使用 HttpClientFactory 注入（named client "gitea"），统一带 admin PAT header。
+/// 使用 HttpClientFactory 注入：读请求走现有 AdminPat 客户端，写请求只能走独立 WritePat 客户端。
 /// 所有公开方法在 Gitea 返回错误时抛出结构化异常，不会静默返回空值。
 /// </summary>
 public class GiteaApiClient
 {
     private readonly HttpClient _http;
+    private readonly HttpClient _writeHttp;
     private readonly GiteaOptions _opts;
     private readonly ILogger<GiteaApiClient> _logger;
+    private readonly GiteaWritePolicy _writePolicy;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -26,11 +30,14 @@ public class GiteaApiClient
     public GiteaApiClient(
         IHttpClientFactory factory,
         IOptions<GiteaOptions> opts,
-        ILogger<GiteaApiClient> logger)
+        ILogger<GiteaApiClient> logger,
+        GiteaWritePolicy writePolicy)
     {
         _opts = opts.Value;
         _logger = logger;
+        _writePolicy = writePolicy;
         _http = factory.CreateClient("gitea");
+        _writeHttp = factory.CreateClient("gitea-write");
     }
 
     // ───────────── Repos ─────────────
@@ -121,6 +128,312 @@ public class GiteaApiClient
     public Task<List<GiteaBranch>> GetBranchesAsync(
         string owner, string repo, CancellationToken ct = default)
         => GetAsync<List<GiteaBranch>>($"/api/v1/repos/{owner}/{repo}/branches", ct);
+
+    /// <summary>Create a new branch from a branch, tag, or commit SHA.</summary>
+    public async Task<GiteaBranch> CreateBranchAsync(
+        string owner, string repo, string newBranch, string? fromRef, CancellationToken ct = default)
+    {
+        _writePolicy.RequireWriteAccess(owner, repo);
+        _writePolicy.ValidateNewBranchName(newBranch);
+
+        var repository = await GetRepoAsync(owner, repo, ct);
+        if (string.Equals(repository.DefaultBranch, newBranch, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException(
+                $"Creating the repository default branch '{newBranch}' through this tool is disabled.");
+
+        var existingBranches = await GetBranchesAsync(owner, repo, ct);
+        if (existingBranches.Any(b => string.Equals(b.Name, newBranch, StringComparison.OrdinalIgnoreCase)))
+            throw new GiteaWriteConflictException($"Branch '{newBranch}' already exists in {owner}/{repo}.");
+
+        var source = string.IsNullOrWhiteSpace(fromRef) ? repository.DefaultBranch : fromRef.Trim();
+        GiteaWritePolicy.ValidateRefName(source);
+
+        try
+        {
+            return await PostWriteAsync<GiteaBranch>(
+                $"{RepoApiPath(owner, repo)}/branches",
+                new { new_branch_name = newBranch, old_ref_name = source },
+                "create branch", ct);
+        }
+        catch (Exception ex) when (IsTransientWriteFailure(ex, ct))
+        {
+            throw new GiteaWriteOutcomeUnknownException(
+                $"Branch creation outcome is unknown for '{newBranch}'. List repository branches before retrying.");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw new GiteaWriteOutcomeUnknownException(
+                $"Branch creation was cancelled after the request started. Check whether '{newBranch}' exists before retrying.");
+        }
+    }
+
+    /// <summary>
+    /// Create one Git commit containing all requested file operations, then CAS the work branch HEAD.
+    /// The batch is staged on a unique temporary ref; only the conditional ref update changes the work branch.
+    /// </summary>
+    public async Task<GiteaFilesResponse> CommitFilesAsync(
+        string owner,
+        string repo,
+        string branch,
+        string expectedHeadSha,
+        string? message,
+        IReadOnlyList<GiteaWriteFileChange> changes,
+        CancellationToken ct = default)
+    {
+        _writePolicy.RequireWriteAccess(owner, repo);
+        if (!IsBlobSha(expectedHeadSha))
+            throw new ArgumentException("expectedHeadSha must be a 40- or 64-character commit SHA.", nameof(expectedHeadSha));
+        var currentBranch = await EnsureWritableBranchAsync(owner, repo, branch, ct);
+        var currentHeadSha = currentBranch.Commit?.Id;
+        if (!string.Equals(currentHeadSha, expectedHeadSha, StringComparison.OrdinalIgnoreCase))
+            throw new GiteaWriteConflictException(
+                $"Branch HEAD conflict for {branch}: expectedHeadSha no longer matches. Read the working branch again before retrying.");
+
+        if (changes is null || changes.Count == 0)
+            throw new ArgumentException("Provide at least one file operation.", nameof(changes));
+        if (changes.Count > _opts.MaxWriteFiles)
+            throw new ArgumentException($"A commit may contain at most {_opts.MaxWriteFiles} file operations.", nameof(changes));
+        if (string.IsNullOrWhiteSpace(message)) message = "Update files via Gitea MCP";
+        message = message.Trim();
+        if (_writePolicy.GetUtf8ByteCount(message, nameof(message)) > 2_000)
+            throw new ArgumentException("Commit message must be at most 2,000 UTF-8 bytes.", nameof(message));
+
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var totalContentBytes = 0;
+        var apiFiles = new List<object>(changes.Count);
+
+        foreach (var change in changes)
+        {
+            if (change is null) throw new ArgumentException("File operation entries cannot be null.", nameof(changes));
+            GiteaWritePolicy.ValidateFilePath(change.Path);
+            if (!seenPaths.Add(change.Path))
+                throw new ArgumentException($"Duplicate file path in one commit: {change.Path}.", nameof(changes));
+
+            var operation = change.Operation.Trim().ToLowerInvariant();
+            if (operation is not ("create" or "update" or "delete"))
+                throw new ArgumentException($"Unsupported operation for {change.Path}; use create, update, or delete.", nameof(changes));
+
+            var hasExpectedSha = !string.IsNullOrWhiteSpace(change.ExpectedSha);
+            if (operation is "update" or "delete")
+            {
+                if (!hasExpectedSha || !IsBlobSha(change.ExpectedSha!))
+                    throw new ArgumentException($"Operation '{operation}' requires a 40- or 64-character expectedSha for {change.Path}.", nameof(changes));
+            }
+            else if (hasExpectedSha)
+            {
+                throw new ArgumentException($"Operation 'create' must omit expectedSha for {change.Path}.", nameof(changes));
+            }
+
+            if (operation == "delete")
+            {
+                if (change.Content is not null)
+                    throw new ArgumentException($"Delete operation must omit content for {change.Path}.", nameof(changes));
+            }
+            else if (change.Content is null)
+            {
+                throw new ArgumentException($"Operation '{operation}' requires text content for {change.Path}.", nameof(changes));
+            }
+
+            var current = await GetFileMetadataAsync(owner, repo, branch, change.Path, ct);
+            if (operation == "create")
+            {
+                if (current is not null)
+                    throw new GiteaWriteConflictException($"File {change.Path} already exists on branch {branch}; use update with its current SHA.");
+                apiFiles.Add(new { operation, path = change.Path, content = EncodeText(change.Content!) });
+                var bytes = _writePolicy.GetUtf8ByteCount(change.Content!, nameof(change.Content));
+                CheckContentSize(change.Path, bytes);
+                totalContentBytes += bytes;
+            }
+            else
+            {
+                if (current is null)
+                    throw new KeyNotFoundException($"File {change.Path} does not exist on branch {branch}.");
+                if (!string.Equals(current.Sha, change.ExpectedSha, StringComparison.OrdinalIgnoreCase))
+                    throw new GiteaWriteConflictException(
+                        $"SHA conflict for {change.Path}: expectedSha does not match the current file version. Read the file again before retrying.");
+                if (!string.Equals(current.Type, "file", StringComparison.OrdinalIgnoreCase))
+                    throw new GiteaWriteConflictException($"Path {change.Path} is not a regular file and cannot be changed by this tool.");
+
+                if (operation == "delete")
+                {
+                    apiFiles.Add(new { operation, path = change.Path, sha = change.ExpectedSha });
+                }
+                else
+                {
+                    apiFiles.Add(new { operation, path = change.Path, sha = change.ExpectedSha, content = EncodeText(change.Content!) });
+                    var bytes = _writePolicy.GetUtf8ByteCount(change.Content!, nameof(change.Content));
+                    CheckContentSize(change.Path, bytes);
+                    totalContentBytes += bytes;
+                }
+            }
+
+            if (totalContentBytes > _opts.MaxWriteRequestBytes)
+                throw new ArgumentException($"Combined file content exceeds Gitea:MaxWriteRequestBytes ({_opts.MaxWriteRequestBytes} bytes).", nameof(changes));
+        }
+
+        // Gitea 1.27's multi-file contents API has per-file SHA checks, but no expected old branch HEAD.
+        // Stage the one-commit batch on a unique temporary ref, then CAS-update the requested branch
+        // with PUT branches/{branch} + old_commit_id. This closes the preflight/write race.
+        var stagingBranch = $"mcp-tmp-{Guid.NewGuid():N}";
+        var payload = new { branch, new_branch = stagingBranch, message, files = apiFiles };
+        GiteaFilesResponse result;
+        try
+        {
+            result = await CreateStagedCommitAsync(
+                owner, repo, branch, stagingBranch, payload, expectedHeadSha, message, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw new GiteaWriteOutcomeUnknownException(
+                $"The request was cancelled while staging. The target branch was not advanced by this call, but temporary ref '{stagingBranch}' may exist; inspect refs before retrying.");
+        }
+        var commitSha = result.Commit?.Sha;
+        if (string.IsNullOrWhiteSpace(commitSha) || !IsBlobSha(commitSha))
+        {
+            var cleanupWarning = await TryDeleteStagingBranchAsync(owner, repo, stagingBranch, ct);
+            throw new GiteaWriteOutcomeUnknownException(
+                AddCleanupWarning("Gitea created the staging commit but returned no usable commit SHA. Check the branch and diff before retrying.", cleanupWarning));
+        }
+
+        try
+        {
+            await EnsureStagedCommitParentAsync(owner, repo, result.Commit!, expectedHeadSha, ct);
+        }
+        catch (GiteaWriteConflictException ex)
+        {
+            var cleanupWarning = await TryDeleteStagingBranchAsync(owner, repo, stagingBranch, ct);
+            throw new GiteaWriteConflictException(AddCleanupWarning(ex.Message, cleanupWarning));
+        }
+        catch (Exception)
+        {
+            var cleanupWarning = await TryDeleteStagingBranchAsync(owner, repo, stagingBranch, ct);
+            throw new GiteaWriteOutcomeUnknownException(AddCleanupWarning(
+                $"The staged commit parent could not be verified. The target branch has not been updated; inspect temporary branch '{stagingBranch}' before retrying.", cleanupWarning));
+        }
+
+        try
+        {
+            await UpdateBranchRefCasAsync(owner, repo, branch, expectedHeadSha, commitSha, ct);
+        }
+        catch (GiteaWriteOutcomeUnknownException ex)
+        {
+            // Keep the staging ref reachable until the caller verifies whether the CAS landed.
+            throw new GiteaWriteOutcomeUnknownException(
+                $"{ex.Message} Temporary branch '{stagingBranch}' was retained for recovery.");
+        }
+        catch (GiteaWriteConflictException ex)
+        {
+            var cleanupWarning = await TryDeleteStagingBranchAsync(owner, repo, stagingBranch, ct);
+            throw new GiteaWriteConflictException(AddCleanupWarning(ex.Message, cleanupWarning));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            var cleanupWarning = await TryDeleteStagingBranchAsync(owner, repo, stagingBranch, ct);
+            throw new UnauthorizedAccessException(AddCleanupWarning(ex.Message, cleanupWarning), ex);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            var cleanupWarning = await TryDeleteStagingBranchAsync(owner, repo, stagingBranch, ct);
+            throw new KeyNotFoundException(AddCleanupWarning(ex.Message, cleanupWarning), ex);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw new GiteaWriteOutcomeUnknownException(
+                $"The write was cancelled during branch compare-and-swap. Verify branch '{branch}' and temporary ref '{stagingBranch}' before retrying.");
+        }
+
+        result.CleanupWarning = await TryDeleteStagingBranchAsync(owner, repo, stagingBranch, ct);
+        return result;
+    }
+
+    /// <summary>Create a new file or update an existing one using an expected blob SHA.</summary>
+    public async Task<GiteaFilesResponse> UpsertFileAsync(
+        string owner,
+        string repo,
+        string path,
+        string content,
+        string branch,
+        string expectedHeadSha,
+        string? expectedSha,
+        string? message,
+        CancellationToken ct = default)
+    {
+        _writePolicy.RequireWriteAccess(owner, repo);
+        _writePolicy.ValidateWritableBranchName(branch);
+        GiteaWritePolicy.ValidateFilePath(path);
+        var current = await GetFileMetadataAsync(owner, repo, branch, path, ct);
+        GiteaWriteFileChange change;
+
+        if (current is null)
+        {
+            if (!string.IsNullOrWhiteSpace(expectedSha))
+                throw new GiteaWriteConflictException($"File {path} does not exist on branch {branch}; omit expectedSha to create it.");
+            change = new GiteaWriteFileChange { Operation = "create", Path = path, Content = content };
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(expectedSha))
+                throw new ArgumentException($"Updating {path} requires expectedSha. Read the file first and pass its current SHA.", nameof(expectedSha));
+            if (!string.Equals(current.Sha, expectedSha, StringComparison.OrdinalIgnoreCase))
+                throw new GiteaWriteConflictException($"SHA conflict for {path}: expectedSha does not match the current file version.");
+            change = new GiteaWriteFileChange { Operation = "update", Path = path, Content = content, ExpectedSha = expectedSha };
+        }
+
+        return await CommitFilesAsync(owner, repo, branch, expectedHeadSha, message,
+            new[] { change }, ct);
+    }
+
+    public Task<GiteaFilesResponse> DeleteFileAsync(
+        string owner, string repo, string path, string expectedSha, string branch, string expectedHeadSha,
+        string? message, CancellationToken ct = default)
+        => CommitFilesAsync(owner, repo, branch, expectedHeadSha, message,
+            new[] { new GiteaWriteFileChange { Operation = "delete", Path = path, ExpectedSha = expectedSha } }, ct);
+
+    public async Task<GiteaPullRequest> CreatePullRequestAsync(
+        string owner, string repo, string head, string baseBranch, string title, string? body,
+        CancellationToken ct = default)
+    {
+        _writePolicy.RequireWriteAccess(owner, repo);
+        GiteaWritePolicy.ValidateBranchName(head);
+        GiteaWritePolicy.ValidateBranchName(baseBranch);
+        if (string.Equals(head, baseBranch, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Pull request head and base must be different branches.");
+        if (string.IsNullOrWhiteSpace(title) || _writePolicy.GetUtf8ByteCount(title, nameof(title)) > 255)
+            throw new ArgumentException("Pull request title is required and must be at most 255 UTF-8 bytes.", nameof(title));
+        if (_writePolicy.GetUtf8ByteCount(body ?? string.Empty, nameof(body)) > _opts.MaxWriteRequestBytes)
+            throw new ArgumentException("Pull request description exceeds Gitea:MaxWriteRequestBytes.", nameof(body));
+
+        try
+        {
+            return await PostWriteAsync<GiteaPullRequest>(
+                $"{RepoApiPath(owner, repo)}/pulls",
+                new { head, @base = baseBranch, title, body = body ?? string.Empty },
+                "create pull request", ct);
+        }
+        catch (Exception ex) when (IsTransientWriteFailure(ex, ct))
+        {
+            throw new GiteaWriteOutcomeUnknownException(
+                $"Pull request creation outcome is unknown for {head} → {baseBranch}. Check open PRs for this head/base pair before retrying.");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw new GiteaWriteOutcomeUnknownException(
+                $"Pull request creation was cancelled after the request started. Check open PRs for {head} → {baseBranch} before retrying.");
+        }
+    }
+
+    /// <summary>Get a branch diff as plain unified diff text.</summary>
+    public async Task<string> GetCompareDiffAsync(
+        string owner, string repo, string baseBranch, string headBranch,
+        int maxBytes = 1024 * 1024, CancellationToken ct = default)
+    {
+        var comparison = Uri.EscapeDataString($"{baseBranch}...{headBranch}");
+        var url = $"{RepoApiPath(owner, repo)}/compare/{comparison}?output=diff";
+        var response = await SendAsync(url, ct);
+        using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var (text, truncated) = await ReadUpToAsync(stream, maxBytes, ct);
+        return truncated ? text + "\n[...diff truncated...]" : text;
+    }
 
     public async Task<List<GiteaCommitSummary>> GetCommitsAsync(
         string owner, string repo, string? @ref, string? since, int limit, CancellationToken ct = default)
@@ -357,6 +670,270 @@ public class GiteaApiClient
 
     // ───────────── Private helpers ─────────────
 
+    private async Task<GiteaBranch> EnsureWritableBranchAsync(
+        string owner, string repo, string branchName, CancellationToken ct)
+    {
+        _writePolicy.ValidateWritableBranchName(branchName);
+        var repository = await GetRepoAsync(owner, repo, ct);
+        if (string.Equals(repository.DefaultBranch, branchName, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException(
+                $"Direct commits to repository default branch '{branchName}' are disabled. Create a working branch and open a pull request.");
+
+        GiteaBranch branch;
+        try
+        {
+            branch = await GetAsync<GiteaBranch>(
+                $"{RepoApiPath(owner, repo)}/branches/{Uri.EscapeDataString(branchName)}", ct);
+        }
+        catch (KeyNotFoundException)
+        {
+            throw new KeyNotFoundException($"Branch '{branchName}' does not exist in {owner}/{repo}.");
+        }
+
+        if (branch.Protected)
+            throw new UnauthorizedAccessException(
+                $"Direct commits to Gitea-protected branch '{branchName}' are disabled. Create a working branch and open a pull request.");
+
+        return branch;
+    }
+
+    private async Task<GiteaFilesResponse> CreateStagedCommitAsync(
+        string owner, string repo, string targetBranch, string stagingBranch, object payload,
+        string expectedHeadSha, string message, CancellationToken ct)
+    {
+        try
+        {
+            return await PostWriteAsync<GiteaFilesResponse>(
+                $"{RepoApiPath(owner, repo)}/contents", payload, "stage commit files", ct);
+        }
+        catch (Exception ex) when (IsTransientWriteFailure(ex, ct))
+        {
+            // The POST may have succeeded even though its response was lost. Do not replay it;
+            // recover only if the unique staging ref points to our expected parent and message.
+            try
+            {
+                var stagedBranch = await GetAsync<GiteaBranch>(
+                    $"{RepoApiPath(owner, repo)}/branches/{Uri.EscapeDataString(stagingBranch)}", ct);
+                var stagedSha = stagedBranch.Commit?.Id;
+                if (string.IsNullOrWhiteSpace(stagedSha) || !IsBlobSha(stagedSha))
+                    throw new GiteaWriteOutcomeUnknownException(
+                        $"Batch outcome is unknown. Inspect temporary branch '{stagingBranch}' and do not retry blindly.");
+
+                var stagedCommit = await GetCommitAsync(owner, repo, stagedSha, ct);
+                var parents = stagedCommit.Parents ?? [];
+                if (!string.Equals(stagedCommit.Commit?.Message.Trim(), message, StringComparison.Ordinal) ||
+                    parents.Count != 1 ||
+                    !string.Equals(parents[0].Sha, expectedHeadSha, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new GiteaWriteOutcomeUnknownException(
+                        $"Batch outcome is unknown. Temporary branch '{stagingBranch}' does not match this request; inspect it before retrying.");
+                }
+
+                return new GiteaFilesResponse
+                {
+                    Commit = new GiteaWriteCommit
+                    {
+                        Sha = stagedCommit.Sha,
+                        Message = stagedCommit.Commit?.Message ?? string.Empty,
+                        Parents = parents.Select(p => new GiteaWriteCommitParent { Sha = p.Sha }).ToList(),
+                    },
+                };
+            }
+            catch (KeyNotFoundException)
+            {
+                throw new GiteaWriteOutcomeUnknownException(
+                    $"Gitea did not confirm the batch response. The target branch '{targetBranch}' has not been advanced by the compare-and-swap step, but temporary branch '{stagingBranch}' could appear later. Inspect refs before retrying.");
+            }
+            catch (GiteaWriteOutcomeUnknownException)
+            {
+                throw;
+            }
+            catch (Exception recoveryError) when (IsTransientWriteFailure(recoveryError, ct))
+            {
+                throw new GiteaWriteOutcomeUnknownException(
+                    $"Batch outcome is unknown and could not be verified. Inspect temporary branch '{stagingBranch}' and target branch '{targetBranch}' before retrying.");
+            }
+        }
+    }
+
+    private async Task EnsureStagedCommitParentAsync(
+        string owner, string repo, GiteaWriteCommit stagedCommit, string expectedHeadSha, CancellationToken ct)
+    {
+        var parents = stagedCommit.Parents;
+        if (parents.Count == 1 && string.Equals(parents[0].Sha, expectedHeadSha, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        // The FilesResponse normally includes parent metadata. Resolve it from the commit endpoint if
+        // this Gitea-compatible server omits it; never update the target ref without checking the parent.
+        var fullCommit = await GetCommitAsync(owner, repo, stagedCommit.Sha, ct);
+        var fullParents = fullCommit.Parents ?? [];
+        if (fullParents.Count != 1 || !string.Equals(fullParents[0].Sha, expectedHeadSha, StringComparison.OrdinalIgnoreCase))
+            throw new GiteaWriteConflictException(
+                $"Branch HEAD changed while staging the batch. The staged commit parent does not match expectedHeadSha for {repo}; re-read the branch and rebuild the changes.");
+    }
+
+    private async Task UpdateBranchRefCasAsync(
+        string owner, string repo, string branch, string expectedHeadSha, string newCommitSha,
+        CancellationToken ct)
+    {
+        try
+        {
+            await PutBranchRefAsync(owner, repo, branch, expectedHeadSha, newCommitSha, ct);
+        }
+        catch (GiteaWriteConflictException)
+        {
+            throw new GiteaWriteConflictException(
+                $"Branch HEAD conflict for {branch}: expectedHeadSha no longer matches the server HEAD. Re-read the working branch and rebuild the changes.");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            // Gitea reports some pre-receive/non-fast-forward rejections as 403. Re-read HEAD
+            // to distinguish a lost race from a stable permission/protection denial.
+            var observed = await GetBranchHeadForRecoveryAsync(owner, repo, branch, newCommitSha, ct);
+            if (string.Equals(observed, newCommitSha, StringComparison.OrdinalIgnoreCase)) return;
+            if (!string.Equals(observed, expectedHeadSha, StringComparison.OrdinalIgnoreCase))
+                throw new GiteaWriteConflictException(
+                    $"Branch HEAD conflict for {branch}: it moved to {observed} while applying the compare-and-swap update.");
+            throw new UnauthorizedAccessException(ex.Message, ex);
+        }
+        catch (Exception ex) when (IsTransientWriteFailure(ex, ct))
+        {
+            var observed = await GetBranchHeadForRecoveryAsync(owner, repo, branch, newCommitSha, ct);
+            if (string.Equals(observed, newCommitSha, StringComparison.OrdinalIgnoreCase)) return;
+            if (!string.Equals(observed, expectedHeadSha, StringComparison.OrdinalIgnoreCase))
+                throw new GiteaWriteConflictException(
+                    $"Branch HEAD conflict for {branch}: the server now points to {observed}. Re-read before retrying.");
+
+            // The update API's old_commit_id is a server-side compare-and-swap. One retry is safe:
+            // if the first request later completes, the old SHA no longer matches and this call cannot overwrite it.
+            try
+            {
+                await PutBranchRefAsync(owner, repo, branch, expectedHeadSha, newCommitSha, ct);
+            }
+            catch (GiteaWriteConflictException)
+            {
+                observed = await GetBranchHeadForRecoveryAsync(owner, repo, branch, newCommitSha, ct);
+                if (string.Equals(observed, newCommitSha, StringComparison.OrdinalIgnoreCase)) return;
+                throw new GiteaWriteConflictException(
+                    $"Branch HEAD conflict for {branch}: expectedHeadSha changed while applying the commit. Re-read before retrying.");
+            }
+            catch (Exception retryError) when (IsTransientWriteFailure(retryError, ct))
+            {
+                observed = await GetBranchHeadForRecoveryAsync(owner, repo, branch, newCommitSha, ct);
+                if (string.Equals(observed, newCommitSha, StringComparison.OrdinalIgnoreCase)) return;
+                throw new GiteaWriteOutcomeUnknownException(
+                    $"Branch update outcome is unknown for {branch}. Its observed HEAD is {observed}; inspect the branch and diff before retrying.");
+            }
+        }
+    }
+
+    private async Task PutBranchRefAsync(
+        string owner, string repo, string branch, string expectedHeadSha, string newCommitSha,
+        CancellationToken ct)
+    {
+        var url = $"{RepoApiPath(owner, repo)}/branches/{Uri.EscapeDataString(branch)}";
+        using var request = new HttpRequestMessage(HttpMethod.Put, url)
+        {
+            Content = JsonContent.Create(new
+            {
+                new_commit_id = newCommitSha,
+                old_commit_id = expectedHeadSha,
+                force = false,
+            }, options: JsonOpts),
+        };
+        using var response = await _writeHttp.SendAsync(request, ct);
+        EnsureWriteSuccess(response, url, "update branch reference");
+    }
+
+    private async Task<string> GetBranchHeadForRecoveryAsync(
+        string owner, string repo, string branch, string newCommitSha, CancellationToken ct)
+    {
+        try
+        {
+            var result = await GetAsync<GiteaBranch>(
+                $"{RepoApiPath(owner, repo)}/branches/{Uri.EscapeDataString(branch)}", ct);
+            var sha = result.Commit?.Id;
+            if (!string.IsNullOrWhiteSpace(sha)) return sha;
+        }
+        catch (Exception)
+        {
+            throw new GiteaWriteOutcomeUnknownException(
+                $"Could not verify whether branch {branch} advanced to {newCommitSha}. Inspect the branch and diff before retrying.");
+        }
+
+        throw new GiteaWriteOutcomeUnknownException(
+            $"Could not verify whether branch {branch} advanced to {newCommitSha}. Inspect the branch and diff before retrying.");
+    }
+
+    private async Task<string?> TryDeleteStagingBranchAsync(
+        string owner, string repo, string stagingBranch, CancellationToken ct)
+    {
+        var url = $"{RepoApiPath(owner, repo)}/branches/{Uri.EscapeDataString(stagingBranch)}";
+        try
+        {
+            using var response = await _writeHttp.DeleteAsync(url, ct);
+            if (response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NotFound) return null;
+            return $"Temporary branch '{stagingBranch}' cleanup failed with HTTP {(int)response.StatusCode}; remove it after verifying it is an MCP staging ref.";
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return $"Temporary branch '{stagingBranch}' cleanup outcome is unknown; inspect it before removing it.";
+        }
+    }
+
+    private static string AddCleanupWarning(string message, string? warning) =>
+        string.IsNullOrWhiteSpace(warning) ? message : $"{message} {warning}";
+
+    private static bool IsTransientWriteFailure(Exception ex, CancellationToken ct) =>
+        !ct.IsCancellationRequested && ex is not GiteaWriteConflictException &&
+        (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException);
+
+    private async Task<GiteaContentMetadata?> GetFileMetadataAsync(
+        string owner, string repo, string branch, string path, CancellationToken ct)
+    {
+        var encodedPath = string.Join('/', path.Split('/').Select(Uri.EscapeDataString));
+        var url = $"{RepoApiPath(owner, repo)}/contents-ext/{encodedPath}?ref={Uri.EscapeDataString(branch)}";
+        try
+        {
+            var response = await GetAsync<GiteaContentMetadataResponse>(url, ct);
+            return response.FileContents;
+        }
+        catch (KeyNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    private void CheckContentSize(string path, int byteCount)
+    {
+        if (byteCount > _opts.MaxWriteFileBytes)
+            throw new ArgumentException(
+                $"File {path} is {byteCount} UTF-8 bytes; the per-file limit is {_opts.MaxWriteFileBytes} bytes.");
+    }
+
+    private static string EncodeText(string content) =>
+        Convert.ToBase64String(Encoding.UTF8.GetBytes(content));
+
+    private static bool IsBlobSha(string sha) =>
+        (sha.Length == 40 || sha.Length == 64) && sha.All(Uri.IsHexDigit);
+
+    private static string RepoApiPath(string owner, string repo) =>
+        $"/api/v1/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}";
+
+    private async Task<T> PostWriteAsync<T>(
+        string relativeUrl, object payload, string operation, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, relativeUrl)
+        {
+            Content = JsonContent.Create(payload, options: JsonOpts),
+        };
+        using var response = await _writeHttp.SendAsync(request, ct);
+        EnsureWriteSuccess(response, relativeUrl, operation);
+        var json = await response.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<T>(json, JsonOpts)
+            ?? throw new InvalidOperationException($"Gitea returned an empty response while attempting to {operation}.");
+    }
+
     private async Task<T> GetAsync<T>(string relativeUrl, CancellationToken ct)
     {
         var response = await SendAsync(relativeUrl, ct);
@@ -377,26 +954,53 @@ public class GiteaApiClient
     /// 把 Gitea HTTP 错误码转换为语义清晰的异常。
     /// 绝不 swallow 异常——Claude 需要看到真实错误原因。
     /// </summary>
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, string url)
+    private static Task EnsureSuccessAsync(HttpResponseMessage response, string url)
     {
-        if (response.IsSuccessStatusCode) return;
-
-        var body = string.Empty;
-        try { body = await response.Content.ReadAsStringAsync(); } catch { }
+        if (response.IsSuccessStatusCode) return Task.CompletedTask;
 
         throw response.StatusCode switch
         {
             HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
                 => new UnauthorizedAccessException(
-                    $"Gitea PAT invalid or insufficient scope. URL={url}, Status={response.StatusCode}, Body={body}"),
+                    $"Gitea read token is invalid or lacks permission. URL={url}, Status={response.StatusCode}."),
             HttpStatusCode.NotFound
-                => new KeyNotFoundException(
-                    $"Repo/Resource not found: {url}. Body={body}"),
+                => new KeyNotFoundException($"Gitea repository or resource not found: {url}."),
             >= HttpStatusCode.InternalServerError
                 => new InvalidOperationException(
-                    $"Gitea backend error ({(int)response.StatusCode}). URL={url}, Body={body}"),
+                    $"Gitea backend error ({(int)response.StatusCode}). URL={url}."),
             _ => new HttpRequestException(
-                    $"Gitea returned {(int)response.StatusCode}. URL={url}, Body={body}")
+                    $"Gitea returned {(int)response.StatusCode}. URL={url}.")
+        };
+    }
+
+    private static void EnsureWriteSuccess(HttpResponseMessage response, string url, string operation)
+    {
+        if (response.IsSuccessStatusCode) return;
+
+        throw response.StatusCode switch
+        {
+            HttpStatusCode.Unauthorized
+                => new UnauthorizedAccessException("Gitea write token is invalid or expired."),
+            HttpStatusCode.Forbidden
+                => new UnauthorizedAccessException("Gitea write token lacks permission for this repository or operation."),
+            HttpStatusCode.NotFound
+                => new KeyNotFoundException($"Gitea repository, source ref, or target branch was not found while attempting to {operation}."),
+            HttpStatusCode.Conflict or HttpStatusCode.UnprocessableEntity
+                => new GiteaWriteConflictException(operation switch
+                {
+                    "create branch" => "The branch already exists or the source ref is invalid. Check both values and retry with a new branch name.",
+                    "update branch reference" => "Branch HEAD conflict: Gitea's old_commit_id check failed, so the target branch was not updated. Re-read the working branch and rebuild the changes.",
+                    "create pull request" => "A pull request for this head/base may already exist, or the PR request is invalid. Check list_pulls/read_pull before retrying.",
+                    _ => $"Gitea rejected the {operation} because a file SHA changed, the branch already exists, or the request is invalid. Re-read current refs and file SHAs before retrying.",
+                }),
+            (HttpStatusCode)423
+                => new UnauthorizedAccessException("Gitea rejected the write because the repository is archived."),
+            _ => new HttpRequestException(
+                $"Gitea {operation} failed with HTTP {(int)response.StatusCode}. No response body was included to avoid exposing repository content.")
         };
     }
 }
+
+public sealed class GiteaWriteConflictException(string message) : InvalidOperationException(message);
+
+public sealed class GiteaWriteOutcomeUnknownException(string message) : InvalidOperationException(message);
