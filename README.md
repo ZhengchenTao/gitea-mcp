@@ -67,6 +67,8 @@ The `/mcp` endpoint keeps the existing `read:gitea` gate. A write call also requ
 
 CI tools: `list_workflows` lists workflow filenames/IDs and states. Inspect the workflow file's `workflow_dispatch` inputs, then call `dispatch_workflow` with `workflowId`, `reference` (branch/tag/commit), and optional string-valued `inputs`. It returns `accepted=true` and the upstream run ID/URL when available; use `list_workflow_runs` and `read_run_log` to check completion. `rerun_workflow_run` reruns all jobs of an existing run. Both mutations require `write:gitea` and Gitea permission, with no repository allowlist. They never automatically replay requests after timeouts: inspect runs before retrying. Triggering or rerunning a workflow can execute its configured deployments.
 
+Gitea may reuse the same run ID when rerunning a workflow. Check the new job ID and execution timestamps in `read_run_log` to distinguish attempts.
+
 Write errors are returned as actionable MCP tool errors: missing scope/PAT, disallowed repo/branch, stale file SHA, stale branch HEAD, and uncertain timeout outcomes have separate messages. For an uncertain outcome, inspect the branch/diff or PR before retrying.
 
 Recommended workflow: inspect files → `create_branch` → use `list_tree` on that working branch for file blob SHAs and the `create_branch` result for its initial HEAD SHA → read content with `read_file` → `commit_files` → use its returned `commit_sha` as the next `expectedHeadSha` → `get_diff` → `create_pull_request` → review with `read_pull`.

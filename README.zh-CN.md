@@ -58,6 +58,8 @@ Gitea REST API
 
 触发 CI：`list_workflows` → `read_file` 检查 workflow 的 `workflow_dispatch.inputs` → `dispatch_workflow(owner, repo, workflowId, reference, inputs)` → `list_workflow_runs` / `read_run_log` 查结果。inputs 的值均为字符串（布尔值传 `"true"` / `"false"`）。返回 `accepted=true` 只表示请求已接收，不表示 CI 已成功；支持时同时返回 `run_id` 与 `html_url`。已有运行可通过 `rerun_workflow_run` 重跑。两个写工具仍要求 `write:gitea` 和 Gitea 账号权限，不设仓库白名单；不自动重试，超时先查运行记录，避免重复构建或部署。
 
+Gitea 重跑可能沿用原 `run_id`，并更新 job ID 与开始/结束时间；用 `read_run_log.jobs` 和时间确认新一次执行，不要把相同 run ID 当成没有触发重跑。
+
 写入错误会以可操作的 MCP tool error 返回，区分 scope / PAT 不足、Gitea 仓库权限或分支规则拒绝、文件 SHA 冲突、分支 HEAD 冲突和超时结果未知。结果未知时先检查分支 / Diff 或 PR，不要盲目重放。
 
 推荐流程：先检查现有文件 → `create_branch` → 在工作分支上用 `list_tree` 获取文件 blob SHA，用 `create_branch` 返回的 SHA 获取初始 HEAD → 用 `read_file` 读取内容 → `commit_files` → 后续提交用返回的 `commit_sha` 作为新 `expectedHeadSha` → `get_diff` → `create_pull_request` → 用 `read_pull` 复核。
