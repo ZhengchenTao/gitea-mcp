@@ -2,7 +2,12 @@
 
 [English](README.md) | 简体中文
 
-一个 [MCP](https://modelcontextprotocol.io/) 服务，让 AI 客户端读取 [Gitea](https://about.gitea.com/) 仓库，并在独立 scope、Gitea 账号权限和分支保护约束下写入文件、创建分支与 PR。读取和写入分别使用服务端令牌；客户端只拿 OAuth access token，所以 Gitea 令牌不会交到 Claude、ChatGPT 或其他连上来的客户端手里。
+一个 [MCP](https://modelcontextprotocol.io/) 服务，让 AI 客户端读写 [Gitea](https://about.gitea.com/) 仓库、创建与合并 PR、触发和重跑 CI。读取和写入分别使用服务端令牌；客户端只拿 OAuth access token，所以 Gitea 令牌不会交到 Claude、ChatGPT 或其他连上来的客户端手里。
+
+- 读取仓库、文件、提交、issue、PR、软件包和 CI 日志。
+- 创建分支、提交文件，支持直接提交 `main` 或默认分支。
+- 创建与合并 PR，触发和重跑 Actions 工作流，包括工作流配置的站点部署。
+- 不设写仓白名单，可操作 Gitea 账号有权限的所有仓库；OAuth scope、Gitea 原生权限与分支保护仍然生效。
 
 ## 三个仓怎么配合
 
@@ -70,7 +75,7 @@ Gitea 重跑可能沿用原 `run_id`，并更新 job ID 与开始/结束时间�
 
 现有 `Gitea__AdminPat` 只供 API 读取客户端使用。若能单独签发只读 PAT，建议只勾 `read:repository`、`read:organization`、`read:package`、`read:issue`、`read:user`，不加 `write:` 或 `admin:`。工具能看到的就是这个令牌能看到的；用普通用户令牌，本服务就只能看到这个用户的仓库；`Gitea__RepoBlacklist` 可以再额外隐藏仓库。
 
-写入另配一个 `Gitea__WritePat`，使用非管理员账号；该账号只应对目标仓库有写权限（若当前 Gitea 版本支持仓库级 token，就限制到该仓库），PAT 只授予 `write:repository`。Gitea 从 v1.23 起支持细粒度 PAT scope。读 API 客户端仍使用 `Gitea__AdminPat`，所有变更工具只使用独立的 `Gitea__WritePat`；不要给所有 OAuth 客户端共享管理员写 token。`Gitea__WritePat` 留空时写工具关闭；仓库访问范围由该账号的 Gitea 权限决定，不需要配置写仓白名单。
+写入另配一个 `Gitea__WritePat`，使用非管理员账号；给该账号授予希望 AI 能写入的仓库权限，PAT 只授予 `write:repository`。Gitea 从 v1.23 起支持细粒度 PAT scope。读 API 客户端仍使用 `Gitea__AdminPat`，所有变更工具只使用独立的 `Gitea__WritePat`；不要给所有 OAuth 客户端共享管理员写 token。`Gitea__WritePat` 留空时写工具关闭；仓库访问范围由该账号的 Gitea 权限决定，不需要配置写仓白名单。
 
 任一令牌泄露：在 Gitea 里撤销并重新签发，只更新对应的 `Gitea__AdminPat` 或 `Gitea__WritePat`，然后重启。启用写入前确认实例版本支持上面两个接口；本地 Mock 测试不会连接 Gitea。
 

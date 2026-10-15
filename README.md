@@ -3,11 +3,16 @@
 English | [简体中文](README.zh-CN.md)
 
 An [MCP](https://modelcontextprotocol.io/) server that gives an AI client
-read access and tightly scoped write access to a [Gitea](https://about.gitea.com/) instance: repositories,
-files, commits, issues, pull requests, packages and Actions runs. It talks to
+read and write access to a [Gitea](https://about.gitea.com/) instance: repositories,
+files, commits, issues, pull requests, packages and Actions workflows. It talks to
 Gitea with a read-only personal access token and, when enabled, a separate
 write token that stay on the server; clients get in with an OAuth access token
 instead, so neither Gitea token reaches Claude, ChatGPT or whatever else you connect.
+
+- Read repositories, files, commits, issues, pull requests, packages and CI logs.
+- Create branches and commit files, including directly to `main` or the default branch.
+- Create and merge pull requests; trigger and rerun Actions workflows, including configured deployments.
+- Access all repositories permitted by the Gitea account, without a write repository allowlist. OAuth scopes and native Gitea permissions and branch protection still apply.
 
 ## How the three repos fit together
 
@@ -55,10 +60,14 @@ All tools need `scope=read:gitea`. Write tools additionally require `scope=write
 | `list_orgs`, `read_org` | Organizations |
 | `list_packages`, `read_package` | Package registry by owner (container, generic, npm …); one version |
 | `list_workflow_runs`, `read_run_log` | Actions runs; one run with its jobs and the tail of the log |
+| `list_workflows` | Workflow filenames/IDs, names and active/disabled states |
+| `dispatch_workflow` | Trigger a workflow supporting `workflow_dispatch`, with a branch/tag/commit ref and optional string inputs |
+| `rerun_workflow_run` | Rerun all jobs of an existing workflow run |
 | `create_branch` | Create a working branch from a branch, tag, or commit SHA |
 | `upsert_file`, `delete_file` | Create/update/delete one UTF-8 text file; every write requires `expectedHeadSha`, and updates/deletes also require the file blob `expectedSha` |
 | `commit_files` | Create, update, and delete up to 20 files; requires expected branch HEAD and per-file SHAs for updates/deletes |
 | `create_pull_request` | Open a PR from a working branch to a target branch |
+| `merge_pull_request` | Merge a reviewed PR with its expected head SHA; enforce CI and Gitea rules, without force-merging or deleting the source branch |
 | `get_diff` | Read one commit diff or compare two refs |
 
 The `/mcp` endpoint keeps the existing `read:gitea` gate. A write call also requires `write:gitea` and a separate write PAT. There is no repository write allowlist: all repositories writable by that Gitea account are available. Direct commits to `main`, `master` and the repository default branch are supported, with file SHA and branch HEAD checks. Gitea enforces the token's push permissions and native branch protection. `Gitea__WriteProtectedBranches` can additionally block specific branches and defaults to empty. File paths are relative and traversal segments are rejected. The server defaults to at most 20 files, 256 KiB per file, 1 MiB total file content, and an 8 MiB HTTP request body.
@@ -69,7 +78,7 @@ CI tools: `list_workflows` lists workflow filenames/IDs and states. Inspect the 
 
 Gitea may reuse the same run ID when rerunning a workflow. Check the new job ID and execution timestamps in `read_run_log` to distinguish attempts.
 
-Write errors are returned as actionable MCP tool errors: missing scope/PAT, disallowed repo/branch, stale file SHA, stale branch HEAD, and uncertain timeout outcomes have separate messages. For an uncertain outcome, inspect the branch/diff or PR before retrying.
+Write errors are returned as actionable MCP tool errors: missing scope/PAT, repository permission or branch protection denial, stale file SHA, stale branch HEAD, and uncertain timeout outcomes have separate messages. For an uncertain outcome, inspect the branch/diff, PR or workflow runs before retrying.
 
 Recommended workflow: inspect files → `create_branch` → use `list_tree` on that working branch for file blob SHAs and the `create_branch` result for its initial HEAD SHA → read content with `read_file` → `commit_files` → use its returned `commit_sha` as the next `expectedHeadSha` → `get_diff` → `create_pull_request` → review with `read_pull`.
 
@@ -85,8 +94,8 @@ repositories; `Gitea__RepoBlacklist` hides specific ones on top.
 
 The existing `Gitea__AdminPat` is used by the read API client only. For writes,
 configure a separate `Gitea__WritePat` for a non-admin Gitea account. Give that
-account write access only to the intended repository (use a repository-restricted
-token if the Gitea version supports it) and grant only `write:repository`.
+account access to the repositories the AI should be able to write, and grant the
+token only `write:repository`. There is no additional repository write allowlist in this service.
 Gitea's granular token scopes are available from v1.23. Never route write calls
 through the existing read client or broadly share a write token. `Gitea__WritePat`
 is optional; if it is empty, write tools are disabled. Repository access follows the Gitea account permissions.
