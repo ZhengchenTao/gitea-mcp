@@ -18,6 +18,38 @@ public sealed class WriteTools(
     private readonly GiteaOptions _options = options.Value;
 
     [McpServerTool]
+    [Description("Create a Gitea repository for the server write-token account, or in an organization when organization is specified. Requires write:gitea and a PAT with write:repository; Gitea enforces creation rights. Defaults to private, initialized with a README on main. No repository allowlist. After a timeout, check list_repos/read_repo before retrying.")]
+    public Task<object> create_repo(
+        [Description("New repository name.")] string name,
+        [Description("Organization login; omit to create under the write-token account. This is not another user's login.")] string? organization = null,
+        [Description("Repository description.")] string? description = null,
+        [Description("Whether the new repository is private. Defaults to true.")] bool isPrivate = true,
+        [Description("Initialize with a README so files can be committed immediately. Defaults to true.")] bool autoInit = true,
+        [Description("Initial default branch. Defaults to main.")] string defaultBranch = "main",
+        CancellationToken ct = default)
+        => ExposeWriteErrorAsync(async () =>
+        {
+            var repo = await gitea.CreateRepoAsync(name, organization, description, isPrivate, autoInit, defaultBranch, ct);
+            return new { id = repo.Id, name = repo.Name, full_name = repo.FullName, @private = repo.Private,
+                default_branch = repo.DefaultBranch, html_url = repo.HtmlUrl, clone_url = repo.CloneUrl };
+        });
+
+    [McpServerTool]
+    [Description("Create a Gitea organization owned by the server write-token account. Requires write:gitea and a PAT with write:organization; Gitea enforces whether the account may create organizations. Visibility defaults to private. After a timeout, check list_orgs/read_org before retrying.")]
+    public Task<object> create_org(
+        [Description("New organization login/name.")] string name,
+        [Description("Organization display name.")] string? fullName = null,
+        [Description("Organization description.")] string? description = null,
+        [Description("public, limited (signed-in users), or private (members only). Defaults to private.")] string visibility = "private",
+        CancellationToken ct = default)
+        => ExposeWriteErrorAsync(async () =>
+        {
+            var org = await gitea.CreateOrgAsync(name, fullName, description, visibility, ct);
+            return new { id = org.Id, name = org.Name, full_name = org.FullName,
+                description = org.Description, visibility = org.Visibility };
+        });
+
+    [McpServerTool]
     [Description(
         "Create a new branch from a branch, tag, or commit SHA. Requires write:gitea and write permission in Gitea. " +
         "If fromRef is omitted, the repository default branch is used. Gitea permissions and configured branch restrictions apply. " +

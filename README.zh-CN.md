@@ -2,10 +2,10 @@
 
 [English](README.md) | 简体中文
 
-一个 [MCP](https://modelcontextprotocol.io/) 服务，让 AI 客户端读写 [Gitea](https://about.gitea.com/) 仓库、创建与合并 PR、触发和重跑 CI。读取和写入分别使用服务端令牌；客户端只拿 OAuth access token，所以 Gitea 令牌不会交到 Claude、ChatGPT 或其他连上来的客户端手里。
+一个 [MCP](https://modelcontextprotocol.io/) 服务，让 AI 客户端读写 [Gitea](https://about.gitea.com/) 仓库、创建仓库与组织、创建与合并 PR、触发和重跑 CI。读取和写入分别使用服务端令牌；客户端只拿 OAuth access token，所以 Gitea 令牌不会交到 Claude、ChatGPT 或其他连上来的客户端手里。
 
 - 读取仓库、文件、提交、issue、PR、软件包和 CI 日志。
-- 创建分支、提交文件，支持直接提交 `main` 或默认分支。
+- 创建个人/组织仓库和组织，创建分支、提交文件，支持直接提交 `main` 或默认分支。
 - 创建与合并 PR，触发和重跑 Actions 工作流，包括工作流配置的站点部署。
 - 不设写仓白名单，可操作 Gitea 账号有权限的所有仓库；OAuth scope、Gitea 原生权限与分支保护仍然生效。
 
@@ -50,6 +50,8 @@ Gitea REST API
 | `list_workflows` | 列出 workflow 的文件名/ID、名称和启用状态 |
 | `dispatch_workflow` | 指定 workflow、branch/tag/commit ref 和字符串 inputs 手动触发 CI；workflow 必须支持 `workflow_dispatch` |
 | `rerun_workflow_run` | 按 run ID 重跑已有 CI 的全部 jobs |
+| `create_repo` | 创建个人仓库，或指定 organization 创建组织仓库；默认私有、初始化 README、默认分支 main |
+| `create_org` | 创建组织；visibility 默认 private |
 | `create_branch` | 从分支、tag 或 Commit SHA 创建工作分支 |
 | `upsert_file`、`delete_file` | 在工作分支新增 / 更新 / 删除单个 UTF-8 文本文件；每次写入都要给 `expectedHeadSha`，更新 / 删除还要给文件 blob `expectedSha` |
 | `commit_files` | 最多 20 个文件的新增、修改和删除；必须给分支 HEAD，修改 / 删除项还要给文件 SHA |
@@ -71,11 +73,13 @@ Gitea 重跑可能沿用原 `run_id`，并更新 job ID 与开始/结束时间�
 
 当前实例版本为 Gitea 1.27.3。多文件 `POST /repos/{owner}/{repo}/contents` 支持逐文件 SHA 校验，但没有分支 HEAD 前置条件。服务会先把批量 Commit 暂存到唯一临时分支，再通过 `PUT /repos/{owner}/{repo}/branches/{branch}` 携带 `old_commit_id=<expectedHeadSha>`、`force=false` 做 compare-and-swap。HEAD 已变化时目标分支不会被更新。成功或已确认冲突后会清理临时分支；清理失败返回 `cleanup_warning`。请求超时且无法确认目标分支状态时会返回“结果未知”，不会重放批量提交，并保留临时 ref 供人工核查。创建分支 / PR 超时也要先检查现有分支或相同 head/base 的 PR，再决定是否重试。实现依据 [Gitea 1.27 多文件 API](https://docs.gitea.com/api/1.27/operations/repo-change-files/) 和 [条件分支更新 API](https://docs.gitea.com/api/1.27/operations/repo-update-branch/)。
 
+创建资源：`create_repo(name, organization?, description?, isPrivate=true, autoInit=true, defaultBranch="main")` 默认在服务端写令牌账号下建仓；organization 只用于指定组织，不代其他用户创建。`create_org(name, fullName?, description?, visibility="private")` 支持 public / limited / private。两个工具都要求 `write:gitea`，使用独立写 PAT，并遵守 Gitea 的创建权限。重名明确报错；超时视为结果未知，先用 `list_repos` / `read_repo` 或 `list_orgs` / `read_org` 查是否已创建，再决定是否重试。
+
 ## Gitea 令牌
 
 现有 `Gitea__AdminPat` 只供 API 读取客户端使用。若能单独签发只读 PAT，建议只勾 `read:repository`、`read:organization`、`read:package`、`read:issue`、`read:user`，不加 `write:` 或 `admin:`。工具能看到的就是这个令牌能看到的；用普通用户令牌，本服务就只能看到这个用户的仓库；`Gitea__RepoBlacklist` 可以再额外隐藏仓库。
 
-写入另配一个 `Gitea__WritePat`，使用非管理员账号；给该账号授予希望 AI 能写入的仓库权限，PAT 只授予 `write:repository`。Gitea 从 v1.23 起支持细粒度 PAT scope。读 API 客户端仍使用 `Gitea__AdminPat`，所有变更工具只使用独立的 `Gitea__WritePat`；不要给所有 OAuth 客户端共享管理员写 token。`Gitea__WritePat` 留空时写工具关闭；仓库访问范围由该账号的 Gitea 权限决定，不需要配置写仓白名单。
+写入另配一个 `Gitea__WritePat`，使用非管理员账号；给该账号授予希望 AI 能写入的仓库权限，PAT 授予 `write:repository`；需要 `create_org` 时另加 `write:organization`。Gitea 从 v1.23 起支持细粒度 PAT scope。读 API 客户端仍使用 `Gitea__AdminPat`，所有变更工具只使用独立的 `Gitea__WritePat`；不要给所有 OAuth 客户端共享管理员写 token。`Gitea__WritePat` 留空时写工具关闭；仓库访问范围由该账号的 Gitea 权限决定，不需要配置写仓白名单。
 
 任一令牌泄露：在 Gitea 里撤销并重新签发，只更新对应的 `Gitea__AdminPat` 或 `Gitea__WritePat`，然后重启。启用写入前确认实例版本支持上面两个接口；本地 Mock 测试不会连接 Gitea。
 

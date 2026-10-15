@@ -35,17 +35,20 @@ public sealed class GiteaWritePolicy
 
     public void RequireWriteAccess(string owner, string repo)
     {
+        RequireWriteAccess();
+        ValidateRepoSegment(owner, "owner");
+        ValidateRepoSegment(repo, "repo");
+        var fullName = $"{owner}/{repo}";
+        if (_repoFilter.IsBlocked(fullName))
+            throw new UnauthorizedAccessException($"Repository {fullName} is blocked by Gitea:RepoBlacklist.");
+    }
+
+    public void RequireWriteAccess()
+    {
         var principal = _httpContextAccessor.HttpContext?.User;
         if (principal?.Identity?.IsAuthenticated != true || !HasScope(principal, ScopePolicies.WriteGitea))
             throw new UnauthorizedAccessException(
                 "This Gitea write tool requires an access token with scope write:gitea. Reauthorize the MCP connection with that scope.");
-
-        ValidateRepoSegment(owner, "owner");
-        ValidateRepoSegment(repo, "repo");
-        var fullName = $"{owner}/{repo}";
-
-        if (_repoFilter.IsBlocked(fullName))
-            throw new UnauthorizedAccessException($"Repository {fullName} is blocked by Gitea:RepoBlacklist.");
 
         if (string.IsNullOrWhiteSpace(_options.WritePat))
             throw new InvalidOperationException(
@@ -146,7 +149,7 @@ public sealed class GiteaWritePolicy
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-    private static void ValidateRepoSegment(string value, string label)
+    public static void ValidateRepoSegment(string value, string label)
     {
         if (string.IsNullOrWhiteSpace(value) || value is "." or ".." || !RepoSegmentPattern.IsMatch(value))
             throw new ArgumentException($"Gitea {label} name is invalid.", label);

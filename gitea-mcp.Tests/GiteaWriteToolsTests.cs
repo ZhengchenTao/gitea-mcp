@@ -23,6 +23,68 @@ public sealed class GiteaWriteToolsTests
     private static readonly string ConcurrentHeadSha = new('e', 40);
 
     [Fact]
+    public async Task CreateResources_UseDedicatedWritePatAndCorrectEndpoints()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        await env.Tools.create_repo("new-repo");
+        await env.Tools.create_repo("org-repo", organization: "new-org", isPrivate: false);
+        await env.Tools.create_org("new-org");
+        Assert.Equal(new[] { "/api/v1/user/repos", "/api/v1/orgs/new-org/repos", "/api/v1/orgs" }, env.Handler.Mutations.Select(x => x.Path));
+        Assert.All(env.Handler.Mutations, x => Assert.Equal("token write-test-token", x.Authorization));
+        using var repo = JsonDocument.Parse(env.Handler.Mutations[0].Body!);
+        Assert.True(repo.RootElement.GetProperty("private").GetBoolean());
+        Assert.True(repo.RootElement.GetProperty("auto_init").GetBoolean());
+        Assert.Equal("main", repo.RootElement.GetProperty("default_branch").GetString());
+        using var org = JsonDocument.Parse(env.Handler.Mutations[2].Body!);
+        Assert.Equal("new-org", org.RootElement.GetProperty("username").GetString());
+        Assert.Equal("private", org.RootElement.GetProperty("visibility").GetString());
+    }
+
+    [Fact]
+    public async Task CreateResources_RejectMissingScopeOrPatBeforeSending()
+    {
+        foreach (var missingPat in new[] { false, true })
+        {
+            var env = missingPat ? CreateEnvironment("read:gitea write:gitea", writePat: "") : CreateEnvironment("read:gitea");
+            await Assert.ThrowsAsync<McpException>(() => env.Tools.create_repo("new-repo"));
+            await Assert.ThrowsAsync<McpException>(() => env.Tools.create_org("new-org"));
+            Assert.Empty(env.Handler.Requests);
+        }
+    }
+
+    [Fact]
+    public async Task CreateResources_RejectInvalidNamesAndVisibilityBeforeSending()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        await Assert.ThrowsAsync<McpException>(() => env.Tools.create_repo("../bad"));
+        await Assert.ThrowsAsync<McpException>(() => env.Tools.create_repo("repo", organization: "org/other"));
+        await Assert.ThrowsAsync<McpException>(() => env.Tools.create_org("org", visibility: "unknown"));
+        Assert.Empty(env.Handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateResources_LostResponseIsNotReplayed(bool organization)
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        env.Handler.LoseCreationResponse = true;
+        var error = await Assert.ThrowsAsync<McpException>(() => organization ? env.Tools.create_org("new-org") : env.Tools.create_repo("new-repo"));
+        Assert.Contains("unknown", error.Message);
+        Assert.Single(env.Handler.Mutations);
+    }
+
+    [Fact]
+    public async Task CreateResources_ExistingNameIsExplicitConflict()
+    {
+        var env = CreateEnvironment("read:gitea write:gitea");
+        env.Handler.CreationConflict = true;
+        var error = await Assert.ThrowsAsync<McpException>(() => env.Tools.create_org("new-org"));
+        Assert.Contains("already exists", error.Message);
+        Assert.Single(env.Handler.Mutations);
+    }
+
+    [Fact]
     public async Task ReadOnlyToken_CannotCallWriteTool()
     {
         var env = CreateEnvironment("read:gitea");
@@ -536,6 +598,8 @@ public sealed class GiteaWriteToolsTests
         public bool LoseCiResponse { get; set; }
         public bool DispatchNoContent { get; set; }
         public string? DispatchQuery { get; private set; }
+        public bool LoseCreationResponse { get; set; }
+        public bool CreationConflict { get; set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -545,6 +609,14 @@ public sealed class GiteaWriteToolsTests
             var captured = new CapturedRequest(method, path, body, request.Headers.Authorization?.ToString());
             Requests.Add(captured);
             if (method != "GET") Mutations.Add(captured);
+
+            if (method == "POST" && path is "/api/v1/user/repos" or "/api/v1/orgs/new-org/repos" or "/api/v1/orgs")
+            {
+                if (LoseCreationResponse) throw new HttpRequestException("simulated lost creation response");
+                if (CreationConflict) return Json(HttpStatusCode.UnprocessableEntity, "{}");
+                if (path == "/api/v1/orgs") return Json(HttpStatusCode.Created, """{"id":7,"name":"new-org","visibility":"private"}""");
+                return Json(HttpStatusCode.Created, """{"id":8,"name":"new-repo","full_name":"owner/new-repo","private":true,"default_branch":"main"}""");
+            }
 
             if (method == "GET" && path == RepoUrl + "/actions/workflows")
                 return Json(HttpStatusCode.OK, """{"total_count":1,"workflows":[{"id":"ci.yml","name":"CI","state":"active"}]}""");

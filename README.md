@@ -10,7 +10,7 @@ write token that stay on the server; clients get in with an OAuth access token
 instead, so neither Gitea token reaches Claude, ChatGPT or whatever else you connect.
 
 - Read repositories, files, commits, issues, pull requests, packages and CI logs.
-- Create branches and commit files, including directly to `main` or the default branch.
+- Create personal/organization repositories and organizations; create branches and commit files, including directly to `main` or the default branch.
 - Create and merge pull requests; trigger and rerun Actions workflows, including configured deployments.
 - Access all repositories permitted by the Gitea account, without a write repository allowlist. OAuth scopes and native Gitea permissions and branch protection still apply.
 
@@ -63,6 +63,8 @@ All tools need `scope=read:gitea`. Write tools additionally require `scope=write
 | `list_workflows` | Workflow filenames/IDs, names and active/disabled states |
 | `dispatch_workflow` | Trigger a workflow supporting `workflow_dispatch`, with a branch/tag/commit ref and optional string inputs |
 | `rerun_workflow_run` | Rerun all jobs of an existing workflow run |
+| `create_repo` | Create a personal repository, or set `organization` to create in an organization; defaults to private and initialized on main |
+| `create_org` | Create an organization; visibility defaults to private |
 | `create_branch` | Create a working branch from a branch, tag, or commit SHA |
 | `upsert_file`, `delete_file` | Create/update/delete one UTF-8 text file; every write requires `expectedHeadSha`, and updates/deletes also require the file blob `expectedSha` |
 | `commit_files` | Create, update, and delete up to 20 files; requires expected branch HEAD and per-file SHAs for updates/deletes |
@@ -84,6 +86,8 @@ Recommended workflow: inspect files → `create_branch` → use `list_tree` on t
 
 Gitea 1.27.3's multi-file `POST /repos/{owner}/{repo}/contents` checks file SHAs but does not accept a branch HEAD precondition. The service stages one batch commit on a unique temporary ref, then uses `PUT /repos/{owner}/{repo}/branches/{branch}` with `old_commit_id=<expectedHeadSha>` and `force=false` to compare-and-swap the working branch. A stale HEAD leaves the target ref unchanged. Temporary refs are deleted after success or a known conflict; cleanup failures are returned as `cleanup_warning`. If a request times out and the target ref cannot be verified, the tool returns an explicit outcome-unknown error and avoids replaying the batch. Branch/PR create timeouts likewise require checking refs or existing head/base PRs before retrying. This implementation uses the [Gitea 1.27 multi-file API](https://docs.gitea.com/api/1.27/operations/repo-change-files/) and [conditional branch update API](https://docs.gitea.com/api/1.27/operations/repo-update-branch/).
 
+Creation: `create_repo(name, organization?, description?, isPrivate=true, autoInit=true, defaultBranch="main")` creates under the write-token account when `organization` is omitted; it does not impersonate another user. `create_org(name, fullName?, description?, visibility="private")` accepts `public`, `limited` or `private`. Both need `write:gitea`, use the separate write PAT and follow Gitea creation permissions. A duplicate name is an error; a timeout is an unknown outcome, so check `list_repos`/`read_repo` or `list_orgs`/`read_org` before retrying.
+
 ## The Gitea token
 
 Keep the existing read token under Gitea → Settings → Applications with only these scopes:
@@ -95,7 +99,7 @@ repositories; `Gitea__RepoBlacklist` hides specific ones on top.
 The existing `Gitea__AdminPat` is used by the read API client only. For writes,
 configure a separate `Gitea__WritePat` for a non-admin Gitea account. Give that
 account access to the repositories the AI should be able to write, and grant the
-token only `write:repository`. There is no additional repository write allowlist in this service.
+token `write:repository`; add `write:organization` to enable `create_org`. There is no additional repository write allowlist in this service.
 Gitea's granular token scopes are available from v1.23. Never route write calls
 through the existing read client or broadly share a write token. `Gitea__WritePat`
 is optional; if it is empty, write tools are disabled. Repository access follows the Gitea account permissions.

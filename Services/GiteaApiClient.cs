@@ -42,6 +42,57 @@ public class GiteaApiClient
 
     // ───────────── Repos ─────────────
 
+    public Task<GiteaRepo> CreateRepoAsync(string name, string? organization, string? description,
+        bool isPrivate, bool autoInit, string defaultBranch, CancellationToken ct = default)
+    {
+        _writePolicy.RequireWriteAccess();
+        GiteaWritePolicy.ValidateRepoSegment(name, "name");
+        GiteaWritePolicy.ValidateBranchName(defaultBranch);
+        if (organization is not null) _writePolicy.RequireWriteAccess(organization, name);
+        ValidateCreationText(description, "description");
+        var url = organization is null ? "/api/v1/user/repos" : $"/api/v1/orgs/{Uri.EscapeDataString(organization)}/repos";
+        return CreateResourceAsync<GiteaRepo>(url, new
+        {
+            name, description = description ?? "", @private = isPrivate,
+            auto_init = autoInit, default_branch = defaultBranch,
+        }, "create repository", $"repository '{name}' (use list_repos/read_repo)", ct);
+    }
+
+    public Task<GiteaOrg> CreateOrgAsync(string name, string? fullName, string? description,
+        string visibility, CancellationToken ct = default)
+    {
+        _writePolicy.RequireWriteAccess();
+        GiteaWritePolicy.ValidateRepoSegment(name, "name");
+        if (visibility is not ("public" or "limited" or "private"))
+            throw new ArgumentException("visibility must be public, limited or private.", nameof(visibility));
+        ValidateCreationText(fullName, "fullName");
+        ValidateCreationText(description, "description");
+        return CreateResourceAsync<GiteaOrg>("/api/v1/orgs", new
+        {
+            username = name, full_name = fullName ?? "", description = description ?? "", visibility,
+            repo_admin_change_team_access = false,
+        }, "create organization", $"organization '{name}' (use list_orgs/read_org)", ct);
+    }
+
+    private static void ValidateCreationText(string? value, string label)
+    {
+        if (value is not null && (value.Length > 2000 || value.Any(char.IsControl)))
+            throw new ArgumentException($"{label} must be at most 2000 characters without control characters.", label);
+    }
+
+    private async Task<T> CreateResourceAsync<T>(string url, object payload, string operation, string target, CancellationToken ct)
+    {
+        try { return await PostWriteAsync<T>(url, payload, operation, ct); }
+        catch (Exception ex) when (IsTransientWriteFailure(ex, ct))
+        {
+            throw new GiteaWriteOutcomeUnknownException($"Creation outcome is unknown for {target}. Check whether it exists before retrying; the request was not replayed.");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw new GiteaWriteOutcomeUnknownException($"Creation was cancelled after the request started for {target}. Check whether it exists before retrying.");
+        }
+    }
+
     /// <summary>
     /// 搜索所有仓库。owner 为 null 时搜索全部（含 org）。
     /// visibility: "public" | "private" | "all"
@@ -1104,6 +1155,8 @@ public class GiteaApiClient
             HttpStatusCode.Conflict or HttpStatusCode.UnprocessableEntity
                 => new GiteaWriteConflictException(operation switch
                 {
+                    "create repository" => "Repository already exists or creation parameters are invalid. Check list_repos/read_repo and the requested name.",
+                    "create organization" => "Organization name already exists or creation parameters are invalid. Check list_orgs/read_org and the requested name.",
                     "create branch" => "The branch already exists or the source ref is invalid. Check both values and retry with a new branch name.",
                     "update branch reference" => "Branch HEAD conflict: Gitea's old_commit_id check failed, so the target branch was not updated. Re-read the working branch and rebuild the changes.",
                     "create pull request" => "A pull request for this head/base may already exist, or the PR request is invalid. Check list_pulls/read_pull before retrying.",
