@@ -8,7 +8,6 @@ public sealed class McpInstanceOptions
     /// <summary>例如 Personal Gitea / Company Gitea；留空时使用实例主机名。</summary>
     public string InstanceName { get; set; } = string.Empty;
 
-    /// <summary>部署方补充的用途说明，不用于授权，也不能替代实例匹配。</summary>
-    public string UsageDescription { get; set; } =
-        "Primarily for AI clients without a local checkout or working environment, such as chat-based assistants.";
+    /// <summary>可选的用途与调用策略，附加到初始化说明和每个工具描述；默认无策略，不用于授权。</summary>
+    public string UsageDescription { get; set; } = string.Empty;
 }

@@ -12,7 +12,7 @@ namespace GiteaMcp.Tests;
 public sealed class McpInstanceMetadataTests
 {
     [Fact]
-    public void Instructions_IdentifyConfiguredInstanceAndRoutingBoundary()
+    public void Instructions_IncludeOnlyInstanceIdentityAndConfiguredPolicy()
     {
         var options = new McpServerOptions();
         new McpInstanceMetadata("https://git.example.com/gitea/", new()
@@ -24,10 +24,10 @@ public sealed class McpInstanceMetadataTests
         Assert.Equal("gitea-mcp", options.ServerInfo!.Name);
         Assert.Equal("Personal Gitea", options.ServerInfo.Title);
         Assert.Contains("https://git.example.com/gitea", options.ServerInstructions);
-        Assert.Contains("ask for clarification before searching or writing", options.ServerInstructions);
-        Assert.Contains("Never send another instance's files", options.ServerInstructions);
-        Assert.Contains("Prefer local Git", options.ServerInstructions);
-        Assert.Contains("Personal repositories only; not the company instance.", options.ServerInstructions);
+        Assert.Equal(
+            "Gitea instance: Personal Gitea (https://git.example.com/gitea). " +
+            "Personal repositories only; not the company instance.", options.ServerInstructions);
+        Assert.Equal(options.ServerInstructions, options.ServerInfo.Description);
     }
 
     [Fact]
@@ -45,6 +45,7 @@ public sealed class McpInstanceMetadataTests
         var metadata = new McpInstanceMetadata("https://company.example.com/", new()
         {
             InstanceName = "Company Gitea",
+            UsageDescription = "Prefer MCP even when local Git is available; follow the team PR workflow.",
         });
 
         metadata.Configure(options);
@@ -56,7 +57,8 @@ public sealed class McpInstanceMetadataTests
             var before = original[tool.ProtocolTool.Name];
             var originalDescription = before["description"]!.GetValue<string>();
             var description = tool.ProtocolTool.Description!;
-            Assert.StartsWith("Company Gitea (https://company.example.com) only. ", description);
+            Assert.StartsWith("Gitea instance: Company Gitea (https://company.example.com). " +
+                "Prefer MCP even when local Git is available; follow the team PR workflow. ", description);
             Assert.EndsWith(originalDescription, description);
             Assert.Equal(1, description.Split("Company Gitea (").Length - 1);
             var after = JsonSerializer.SerializeToNode(tool.ProtocolTool)!.AsObject();
@@ -77,10 +79,28 @@ public sealed class McpInstanceMetadataTests
         var options = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
 
         Assert.Equal("Gitea at git.example.com:8443", options.ServerInfo!.Title);
-        Assert.Contains("without a local checkout", options.ServerInstructions);
+        Assert.Equal("Gitea instance: Gitea at git.example.com:8443 (https://git.example.com:8443).",
+            options.ServerInstructions);
         Assert.All(options.ToolCollection!, tool =>
-            Assert.StartsWith("Gitea at git.example.com:8443 (https://git.example.com:8443) only.",
+            Assert.StartsWith("Gitea instance: Gitea at git.example.com:8443 (https://git.example.com:8443). ",
                 tool.ProtocolTool.Description));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public void EmptyPolicy_AdvertisesIdentityWithoutUsageOrRoutingRules(string? policy)
+    {
+        var options = new McpServerOptions();
+        new McpInstanceMetadata("https://git.example.com", new()
+        {
+            UsageDescription = policy!,
+        }).Configure(options);
+
+        Assert.Equal("Gitea instance: Gitea at git.example.com (https://git.example.com).",
+            options.ServerInstructions);
+        Assert.Equal(options.ServerInstructions, options.ServerInfo!.Description);
     }
 
     [Theory]

@@ -108,19 +108,19 @@ If either token leaks, revoke it in Gitea and replace only the corresponding
 `Gitea__AdminPat` or `Gitea__WritePat`, then restart. Before enabling writes,
 verify that the instance API version matches the supported multi-file and branch-update endpoints above.
 
-## Instance identity and AI routing
+## Instance identity and configurable AI guidance
 
-This server connects only to `Gitea__BaseUrl`. Initialization instructions and every tool description include that instance's name and URL; tool names, schemas and permissions stay unchanged. AI clients should establish the target instance from a repository URL, Git remote, or the user's explicit selection of this instance before querying or writing. Matching owner/repo names alone are insufficient. Ask when the instance is unclear, and never send another instance's files or changes here as a fallback. Prefer local Git when a usable local checkout exists, unless the user requests MCP. Branches and PRs are needed only when required by the task, repository rules or branch protection.
+This server connects to `Gitea__BaseUrl`. Initialization instructions and every tool description include only the instance name and URL by default. The project does not prescribe personal/company use, local Git versus MCP priority, instance confirmation rules, or branch/PR workflows.
 
-Deploy personal and company instances separately with their own backend URLs and credentials, and label each client connector accordingly. For example, a personal instance can use:
+Operators can set `Mcp__UsageDescription` to supply their own usage and routing policy. The text is appended to initialization instructions, the server description and every tool description, so clients exposing individual tools also receive it. Leave it empty to add no policy. This is one optional personal-deployment example, not the project default:
 
 ```text
 Gitea__BaseUrl=https://git.example.com
 Mcp__InstanceName=Personal Gitea
-Mcp__UsageDescription=Personal Gitea only; not the company instance. Primarily for chat-based AI without a local working environment.
+Mcp__UsageDescription=Personal Gitea only; not the company instance. Primarily for chat-based AI without a local working environment. Prefer local Git when available. If the target instance is unclear, ask before calling.
 ```
 
-A blank name falls back to the instance hostname. The URL always comes from `Gitea__BaseUrl`; descriptive text cannot switch it. Usage text is sent to AI clients: keep credentials and confidential data out. It guides tool selection and does not add an authorization boundary. `BaseUrl` must be an absolute HTTP(S) URL without user information, query or fragment to avoid exposing embedded credentials in metadata. After updating the service or configuration, reconnect clients and refresh their tool catalogs; cached plugin names/descriptions may need a separate update. No deployment-specific domain or identity is hardcoded in this repository.
+A company deployment can provide its own name and policy, such as preferring MCP or following a team PR workflow. A blank name falls back to the instance hostname; the actual backend always comes from `Gitea__BaseUrl`. Descriptions guide AI tool selection without changing OAuth, Gitea permissions or branch protection, or switching backends. Keep credentials and confidential data out. `BaseUrl` must be an absolute HTTP(S) URL without user information, query or fragment to avoid exposing embedded credentials in metadata. After updating the service or configuration, reconnect clients and refresh their tool catalogs; cached plugin names/descriptions may need a separate update.
 
 ## Configuration
 
@@ -145,7 +145,7 @@ Environment variables, `__` for nesting.
 | `Jwt__ValidTypes__N` | – | RS256 only: allowed `typ` header values. Set `at+jwt` for nas-auth, whose id_tokens share the signing key. Empty means no check, for providers whose tokens say `typ: JWT`. |
 | `Jwt__SigningKey__Current` / `__Previous` | – | HS256 only: the key shared with your auth server, and the previous one during rotation |
 | `Mcp__InstanceName` | Instance hostname | AI-facing instance label, e.g. Personal Gitea / Company Gitea |
-| `Mcp__UsageDescription` | Primarily for chat-based AI without a local working environment | Additional usage guidance sent in initialization instructions; cannot override instance matching |
+| `Mcp__UsageDescription` | Empty | Optional usage/routing policy appended to initialization instructions, server description and every tool description; no policy by default |
 | `Mcp__OAuthDiscovery__Issuer` | – | Required. Published in this server's OAuth metadata. |
 | `Mcp__OAuthDiscovery__AuthorizationEndpoint` | – | Required |
 | `Mcp__OAuthDiscovery__TokenEndpoint` | – | Required |
