@@ -22,7 +22,7 @@ public class RepoTools(
         "When owner is omitted, returns ALL repos across personal account and all orgs (up to limit). " +
         "Use visibility='private' to show only private repos, 'public' for public-only. " +
         "Returns: owner, repo name, description, default_branch, private flag, size (KB), updated_at, html_url. " +
-        "Tip: call this first to discover available repos before using read_repo or read_file.")]
+        "After confirming this is the target Gitea instance, call this to discover repos before using read_repo or read_file.")]
     public async Task<List<object>> list_repos(
         [Description("Filter by owner login (user or org name). Omit to list everything.")] string? owner = null,
         [Description("Visibility filter: 'public', 'private', or 'all' (default 'all').")] string? visibility = null,

@@ -5,6 +5,7 @@ using GiteaMcp.Services;
 using Microsoft.Extensions.Http.Resilience;
 using System.Net;
 using System.Net.Http.Headers;
+using ModelContextProtocol.Server;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -86,9 +87,13 @@ builder.Services.AddScoped<GiteaWritePolicy>();
 builder.Services.AddScoped<GiteaApiClient>();
 
 // ─── MCP Server ────────────────────────────────────────────
+var instanceMetadata = new McpInstanceMetadata(giteaBaseUrl,
+    builder.Configuration.GetSection(McpInstanceOptions.SectionName).Get<McpInstanceOptions>()
+        ?? new McpInstanceOptions());
 builder.Services.AddMcpServer()
     .WithHttpTransport()          // Streamable HTTP（Claude.ai custom connector 走这个）
     .WithToolsFromAssembly();     // 自动扫描 [McpServerToolType]
+builder.Services.PostConfigure<McpServerOptions>(instanceMetadata.Configure);
 
 // ─── Build ─────────────────────────────────────────────────
 var app = builder.Build();

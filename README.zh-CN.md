@@ -83,6 +83,20 @@ Gitea 重跑可能沿用原 `run_id`，并更新 job ID 与开始/结束时间�
 
 任一令牌泄露：在 Gitea 里撤销并重新签发，只更新对应的 `Gitea__AdminPat` 或 `Gitea__WritePat`，然后重启。启用写入前确认实例版本支持上面两个接口；本地 Mock 测试不会连接 Gitea。
 
+## 实例身份与 AI 调用边界
+
+本服务只连接 `Gitea__BaseUrl` 指定的一个实例。MCP 初始化说明和每个工具的描述都会包含该实例的名称与地址；工具名、参数和权限规则不变。AI 应先从仓库 URL、Git remote 或用户明确指定的实例确认归属，再查询或写入，不能仅凭相同的 owner/repo 名字判断；不明确时先澄清，不把其他实例的文件或改动提交到这里。有本地工作环境时优先本地 Git，用户明确指定 MCP 时仍可使用；是否开分支或 PR 由任务、仓规与分支保护决定。
+
+个人和公司实例应分别部署、使用各自的地址和凭据，并在客户端连接器名称与描述中注明归属。例如个人实例可以配置：
+
+```text
+Gitea__BaseUrl=https://git.example.com
+Mcp__InstanceName=Personal Gitea
+Mcp__UsageDescription=Personal Gitea only; not the company instance. Primarily for chat-based AI without a local working environment.
+```
+
+名称留空时使用实例主机名；地址始终从 `Gitea__BaseUrl` 生成，不能由说明文字切换。用途说明会发给 AI，不要放凭据或机密；它是调用指引，不是新的授权限制。`BaseUrl` 仅接受不带用户信息、query 或 fragment 的绝对 HTTP(S) URL，避免把凭据暴露在描述中。更新服务或配置后，让客户端重新连接并刷新工具目录；客户端缓存的插件名称/描述可能仍需单独更新。本仓不包含任何特定部署的域名或身份默认值。
+
 ## 配置
 
 用环境变量，`__` 表示层级。
@@ -105,6 +119,8 @@ Gitea 重跑可能沿用原 `run_id`，并更新 job ID 与开始/结束时间�
 | `Jwt__Audience` | `gitea` | 期望的 `aud` |
 | `Jwt__ValidTypes__N` | – | 仅 RS256：允许的 `typ` 头。对接 nas-auth 设 `at+jwt`，因为它的 id_token 用的是同一把钥。留空不检查，兼容 token 里写 `typ: JWT` 的服务。 |
 | `Jwt__SigningKey__Current` / `__Previous` | – | 仅 HS256：和授权服务共享的密钥，以及轮换期间的上一把 |
+| `Mcp__InstanceName` | 实例主机名 | 发给 AI 的实例名称，例如 Personal Gitea / Company Gitea |
+| `Mcp__UsageDescription` | 主要供无本地工作环境的聊天 AI 使用 | 补充用途说明；随初始化 instructions 发送，不能覆盖实例匹配要求 |
 | `Mcp__OAuthDiscovery__Issuer` | – | 必填，写进本服务的 OAuth 元数据 |
 | `Mcp__OAuthDiscovery__AuthorizationEndpoint` | – | 必填 |
 | `Mcp__OAuthDiscovery__TokenEndpoint` | – | 必填 |
