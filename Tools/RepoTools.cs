@@ -18,13 +18,13 @@ public class RepoTools(
 
     [McpServerTool]
     [Description(
-        "List Gitea repositories accessible to the admin token. " +
-        "When owner is omitted, returns ALL repos across personal account and all orgs (up to limit). " +
+        "List repositories accessible to the configured Gitea account. " +
+        "Returns at most 50 matching repositories; results may be incomplete and pagination is not supported. When owner is omitted, searches across the account and its organizations. " +
         "Use visibility='private' to show only private repos, 'public' for public-only. " +
         "Returns: owner, repo name, description, default_branch, private flag, size (KB), updated_at, html_url. " +
         "Use this to discover available repositories before using read_repo or read_file.")]
     public async Task<List<object>> list_repos(
-        [Description("Filter by owner login (user or org name). Omit to list everything.")] string? owner = null,
+        [Description("Filter by owner login (user or org name). Omit to search all accessible owners, subject to the result limit.")] string? owner = null,
         [Description("Visibility filter: 'public', 'private', or 'all' (default 'all').")] string? visibility = null,
         [Description("Max number of repos to return. Default 50, max 50.")] int? limit = null,
         CancellationToken ct = default)
